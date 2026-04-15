@@ -1,0 +1,46 @@
+# ========================
+# Python & Virtual Env
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ========================
+# Environment Variables
+# ========================
+# NEVER commit your secrets, JWT keys, or MongoDB URIs
+.env
+.env.local
+
+# ========================
+# Machine Learning Models
+# ========================
+# Prevent massive tensor/weight files from crashing your Git repo
+app/ml_models/*.pth
+app/ml_models/*.h5
+app/ml_models/*.onnx
+app/ml_models/*.pt
+
+# ========================
+# Data & Processing Output
+# ========================
+# Ignore any downloaded CT scans or generated heatmaps during testing
+*.dcm
+*.nii
+*.nii.gz
+*.png
+*.jpg
+*.jpeg
+Unified_Pulmonary_System_README.pdf
+
+# ========================
+# IDE & System Files
+# ========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
