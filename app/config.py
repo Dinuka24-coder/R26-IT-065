@@ -1,9 +1,9 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    MONGO_URI: str = "mongodb://localhost:27017"
-    MONGO_DB_NAME: str = "pulmonary_cdss"
-    SECRET_KEY: str = "your_secret_key_here"
+    MONGO_URI: str
+    MONGO_DB_NAME: str
+    SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     API_PREFIX: str = "/api/v1"

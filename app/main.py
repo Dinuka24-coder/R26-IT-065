@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.database import connect_db, close_db
+from app.database import connect_db, close_db, get_database
 from app.config import settings
 from app.api.v1.router import router
 
@@ -24,3 +24,13 @@ async def shutdown():
 @app.get("/")
 async def root():
     return {"message": "Pulmonary CDSS API is running"}
+
+@app.get("/test-db")
+async def test_db():
+    db = get_database()
+    collections = await db.list_collection_names()
+    return {
+        "status": "✅ Connected",
+        "database": settings.MONGO_DB_NAME,
+        "collections": collections
+    }
