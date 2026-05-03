@@ -44,3 +44,5 @@ Unified_Pulmonary_System_README.pdf
 .idea/
 .DS_Store
 Thumbs.db
+
+app/ml_models/component1/weights/pneumothorax_model.h5
