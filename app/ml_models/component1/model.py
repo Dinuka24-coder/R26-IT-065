@@ -1,7 +1,7 @@
 from tensorflow.keras.models import load_model
 import os
 
-WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "weights", "pneumothorax_model.h5")
+WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "weights", "pneumothorax_model.keras")
 
 model = None
 
