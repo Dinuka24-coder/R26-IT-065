@@ -7,3 +7,5 @@ pymongo
 python-jose[cryptography]
 passlib[bcrypt]
 python-multipart
+tensorflow
+opencv-python-headless
