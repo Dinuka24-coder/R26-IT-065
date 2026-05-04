@@ -24,7 +24,7 @@ app/ml_models/*.pth
 app/ml_models/*.h5
 app/ml_models/*.onnx
 app/ml_models/*.pt
-
+app/ml_models/component1/weights/*.keras
 # ========================
 # Data & Processing Output
 # ========================
@@ -44,3 +44,4 @@ Unified_Pulmonary_System_README.pdf
 .idea/
 .DS_Store
 Thumbs.db
+

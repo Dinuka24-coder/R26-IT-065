@@ -2,8 +2,9 @@ from bson import ObjectId
 from app.database import get_database
 
 async def save_result(collection_name: str, result: dict) -> str:
-    db = get_database()
-    res = await db[collection_name].insert_one(result)
+    db  = get_database()
+    # Use a copy so original dict is not mutated by MongoDB _id injection
+    res = await db[collection_name].insert_one(result.copy())
     return str(res.inserted_id)
 
 async def get_result_by_id(collection_name: str, result_id: str) -> dict:
