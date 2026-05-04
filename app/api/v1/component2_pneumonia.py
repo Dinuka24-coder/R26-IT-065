@@ -1,10 +1,12 @@
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form
 import cv2
 import numpy as np
+import logging
 
 from app.ml_models.component2.inference import run_pneumonia_inference
 from app.services.comp2_service import save_pneumonia_prediction
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/")
@@ -16,20 +18,19 @@ async def predict_pneumonia(
     patient_id: str = Form(...), # NEW: Ask the user for the Patient ID
     file: UploadFile = File(...)
 ):
-    try:
-        # 1. Read the image
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if img is None:
-            raise ValueError("Could not decode image.")
+    # 1. Read and decode the image
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
+    if img is None:
+        raise HTTPException(status_code=400, detail="Could not decode image. Please upload a valid image file.")
+
+    try:
         # 2. Run the AI Math
         diagnosis, confidence, severity, heatmap_base64 = run_pneumonia_inference(img)
 
         # 3. Save to MongoDB using the Service
-        # We pass the Form data and the AI results to the manager
         db_record_id = await save_pneumonia_prediction(
             patient_id=patient_id,
             filename=file.filename,
@@ -51,4 +52,5 @@ async def predict_pneumonia(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Inference or Database save failed: {str(e)}")
+        logger.exception("Pneumonia inference or database save failed")
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again later.")

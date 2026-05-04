@@ -1,7 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Optional
 from app.repositories.result_repo import save_result
 
-async def save_pneumonia_prediction(patient_id: str, filename: str, diagnosis: str, confidence: float, severity: str, heatmap_base64: str):
+async def save_pneumonia_prediction(patient_id: str, filename: str, diagnosis: str, confidence: float, severity: str, heatmap_base64: Optional[str]):
     """
     Acts as the middleman: Packages and formats the AI result, 
     then hands it to the repository.
@@ -27,7 +28,7 @@ async def save_pneumonia_prediction(patient_id: str, filename: str, diagnosis: s
         "raw_score": raw_score,           # Adding the raw decimal
         "severity": severity,
         "explanation_image": heatmap_base64,
-        "timestamp": datetime.utcnow()    # Kept as a real Date object!
+        "timestamp": datetime.now(timezone.utc)    # Timezone-aware UTC timestamp
     }
 
     inserted_id = await save_result(collection_name="pneumonia_results", result=result_data)
