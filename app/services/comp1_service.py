@@ -1,7 +1,7 @@
 from app.ml_models.component1.inference import predict
 from app.ml_models.component1.urgency import classify_urgency
 from app.repositories.result_repo import save_result
-from datetime import datetime
+from datetime import datetime, timezone
 
 async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
     result  = predict(image_bytes)
@@ -14,7 +14,7 @@ async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
         "confidence": result["confidence"],
         "raw_score":  result["raw_score"],
         "urgency":    urgency,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
 
     saved_id = await save_result("pneumothorax_results", final_result)
