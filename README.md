@@ -33,7 +33,7 @@ The backend is a **FastAPI** application exposing REST endpoints for four AI-pow
 | # | Component | Input | AI Model | Output |
 |---|-----------|-------|----------|--------|
 | 1 | **Pneumothorax Detection** | Chest X-ray | MobileNet / EfficientNet + Grad-CAM | Prediction, confidence score, heatmap overlay, urgency level (High / Moderate / Low) |
-| 2 | **Pneumonia Diagnosis & Severity** | Chest X-ray | MobileNetV2 + Weakly Supervised Localization | Disease label, severity percentage, lung damage boundary overlay |
+| 2 | **Pneumonia Diagnosis & Severity** | Chest X-ray | MobileNetV2 + Weakly Supervised Localization | Disease label, severity percentage, lung damage boundary overlay, Grad-Cam Heatmap with thresholding techniques to depict the affected region |
 | 3 | **Tuberculosis Detection** | Chest X-ray | GhostNet + MobileViT + Two-stage XAI | TB lesion segmentation (cavities, nodules, consolidations), pixel-level mask, lung impact score |
 | 4 | **3D Lung Cancer Detection** | CT Scan (DICOM) | 3D Volumetric CNN | Nodule / tumor localization in 3D, detects lesions hidden behind ribs or heart tissue |
 
