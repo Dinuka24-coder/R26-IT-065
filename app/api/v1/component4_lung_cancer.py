@@ -2,14 +2,15 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 from app.services.comp4_service import run_prediction
 
+
 router = APIRouter()
+
 
 @router.post("/predict")
 async def predict_lung_cancer_sub_type(
     patient_id: str = Form(...),
     file: UploadFile = File(...)
 ):
-    # Validate file type
     if not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=400,
@@ -22,4 +23,5 @@ async def predict_lung_cancer_sub_type(
         patient_id,
         image_bytes
     )
+
     return result

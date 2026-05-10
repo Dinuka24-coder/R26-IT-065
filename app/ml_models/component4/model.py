@@ -4,7 +4,8 @@ import os
 WEIGHTS_PATH = os.path.join(
     os.path.dirname(__file__),
     "weights",
-    "lung_cancer_mobilenet_final.keras"
+    #"lung_cancer_mobilenet_final.keras"
+    "dual_path_weighted_lung_cancer_model_final_New.keras"
 )
 
 model = None

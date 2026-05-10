@@ -3,7 +3,8 @@ import cv2
 
 from app.ml_models.component4.model import get_model
 
-IMG_SIZE = (256, 256)
+#IMG_SIZE = (256, 256)
+IMG_SIZE = (224, 224)
 
 CLASS_NAMES = [
     "adenocarcinoma",
