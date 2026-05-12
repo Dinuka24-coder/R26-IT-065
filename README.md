@@ -1,4 +1,4 @@
-# Unified Clinical Decision Support System for Pulmonary Diseases
+# Multi - Modal Pulmonary Diseases Detection System
 ### Backend API — Python FastAPI + MongoDB
 
 ---
