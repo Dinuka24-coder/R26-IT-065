@@ -3,10 +3,17 @@ from app.database import connect_db, close_db, get_database
 from app.config import settings
 from app.api.v1.router import router
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="Pulmonary CDSS API",
     description="Unified Clinical Decision Support System for Pulmonary Diseases",
     version="1.0.0"
+)
+app.add_middleware(CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Register routes
