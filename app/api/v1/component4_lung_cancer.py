@@ -1,7 +1,27 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+
+from app.services.comp4_service import run_prediction
+
 
 router = APIRouter()
 
-@router.get("/")
-async def lung_cancer_status():
-    return {"message": "Component 4 - Lung Cancer endpoint is working"}
+
+@router.post("/predict")
+async def predict_lung_cancer_sub_type(
+    patient_id: str = Form(...),
+    file: UploadFile = File(...)
+):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be an image"
+        )
+
+    image_bytes = await file.read()
+
+    result = await run_prediction(
+        patient_id,
+        image_bytes
+    )
+
+    return result
