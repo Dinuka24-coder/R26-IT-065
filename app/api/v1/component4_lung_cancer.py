@@ -1,5 +1,4 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-
 from app.services.comp4_service import run_prediction
 
 
