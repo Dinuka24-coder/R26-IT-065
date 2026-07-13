@@ -9,11 +9,13 @@ async def predict_pneumothorax(
     file:       UploadFile = File(...)
 ):
     if not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=400,
-            detail="File must be an image"
-        )
+        raise HTTPException(status_code=400, detail="File must be an image")
 
     image_bytes = await file.read()
     result      = await run_prediction(patient_id, image_bytes)
+
+    # If image was rejected as non-X-ray
+    if result.get("status") == "rejected":
+        raise HTTPException(status_code=422, detail=result["error"])
+
     return result
