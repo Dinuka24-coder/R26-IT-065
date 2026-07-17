@@ -16,6 +16,7 @@ async def pneumonia_status():
 @router.post("/predict")
 async def predict_pneumonia(
     patient_id: str = Form(...), # NEW: Ask the user for the Patient ID
+    include_explanation_image: bool = Form(False),
     file: UploadFile = File(...)
 ):
     # 1. Read and decode the image
@@ -48,7 +49,7 @@ async def predict_pneumonia(
             "diagnosis": diagnosis,
             "confidence": f"{confidence:.2f}%",
             "severity": severity,
-            "explanation_image": "Base64 String Omitted for Console Speed" # Kept short for testing
+            "explanation_image": heatmap_base64 if include_explanation_image else None
         }
 
     except Exception as e:
