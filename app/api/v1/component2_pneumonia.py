@@ -48,7 +48,7 @@ async def predict_pneumonia(
             "diagnosis": diagnosis,
             "confidence": f"{confidence:.2f}%",
             "severity": severity,
-            "explanation_image": "Base64 String Omitted for Console Speed" # Kept short for testing
+            "explanation_image": heatmap_base64
         }
 
     except Exception as e:
