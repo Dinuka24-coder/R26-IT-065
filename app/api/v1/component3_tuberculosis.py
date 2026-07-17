@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from app.services.comp3_service import process_tb_scan
 from app.models.component3_schema import TBPredictionResponse
 
-router = APIRouter(prefix="/component3", tags=["Tuberculosis (GhostNet+MobileViT)"])
+router = APIRouter()
 
 @router.post("/predict", response_model=TBPredictionResponse)
 async def analyze_tb_scan(

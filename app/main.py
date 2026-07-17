@@ -8,16 +8,26 @@ from fastapi.staticfiles import StaticFiles
 
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="Pulmonary CDSS API",
     description="Unified Clinical Decision Support System for Pulmonary Diseases",
     version="1.0.0"
 )
+app.add_middleware(CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins (dev mode — includes file:// pages)
-    allow_credentials=False,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000"
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
