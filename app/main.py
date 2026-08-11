@@ -15,17 +15,16 @@ app = FastAPI(
     description="Unified Clinical Decision Support System for Pulmonary Diseases",
     version="1.0.0"
 )
-app.add_middleware(CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
+# Single consolidated CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "http://localhost:5173",
-        "http://localhost:3000"
+        "http://127.0.0.1:5173",
+        "null"  # Allow direct file:// loads (origin is 'null' in browsers)
     ],
     allow_credentials=True,
     allow_methods=["*"],
