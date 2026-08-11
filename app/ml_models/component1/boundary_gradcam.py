@@ -26,6 +26,46 @@ def preprocess_for_gradcam(image_bytes: bytes) -> tuple:
 
     return np.expand_dims(img_model, axis=0), img_original, img
 
+def generate_standard_gradcam_overlay(image_bytes: bytes):
+    """Standard Grad-CAM WITHOUT lung masking or boundary — for comparison"""
+    model = get_model()
+    img_batch, img_original, gray_img = preprocess_for_gradcam(image_bytes)
+    efficientnet = model.layers[1]
+
+    grad_model = tf.keras.Model(
+        inputs  = efficientnet.input,
+        outputs = [efficientnet.get_layer("top_activation").output, efficientnet.output]
+    )
+
+    with tf.GradientTape() as tape:
+        conv_outputs, effnet_output = grad_model(img_batch)
+        tape.watch(conv_outputs)
+        x = effnet_output
+        for layer in model.layers[2:]:
+            x = layer(x)
+        loss = x[:, 0]
+
+    grads    = tape.gradient(loss, conv_outputs)
+    pooled   = tf.reduce_mean(grads, axis=(0, 1, 2))
+    conv_out = conv_outputs[0]
+    heatmap  = conv_out @ pooled[..., tf.newaxis]
+    heatmap  = tf.squeeze(heatmap).numpy()
+
+    heatmap = np.maximum(heatmap, 0)
+    if heatmap.max() > 0:
+        heatmap = heatmap / heatmap.max()
+
+    heatmap_resized = cv2.resize(heatmap, IMG_SIZE)
+
+    # NO masking, NO thresholding, NO boundary — raw standard Grad-CAM
+    heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET)
+    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+    overlay = cv2.addWeighted(img_original, 0.6, heatmap_colored, 0.4, 0)
+
+    overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
+    _, buffer   = cv2.imencode(".png", overlay_bgr)
+    return base64.b64encode(buffer).decode("utf-8")
+
 
 def segment_lung_region(gray_img: np.ndarray) -> np.ndarray:
     """
@@ -115,9 +155,33 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
     3. Thresholding (removes weak activations)
     4. Boundary extraction (Canny edge on pleural line)
     5. Negative space detection (the void)
+
+    Note: Grad-CAM + U-Net are ONLY generated when Pneumothorax is
+    detected. Normal / Not-Pneumothorax cases skip all heatmap work.
     """
     model = get_model()
     img_batch, img_original, gray_img = preprocess_for_gradcam(image_bytes)
+
+    # ── PREDICT FIRST ──────────────────────────────────────────
+    raw_score  = float(model.predict(img_batch, verbose=0)[0][0])
+    label      = "Pneumothorax Detected" if raw_score >= 0.5 else "No Pneumothorax"
+    confidence = round(raw_score * 100, 2) if raw_score >= 0.5 \
+                 else round((1 - raw_score) * 100, 2)
+
+    # ── EARLY RETURN: skip Grad-CAM + U-Net for normal cases ───
+    if raw_score < 0.5:
+        return {
+            "prediction":          label,
+            "confidence":          confidence,
+            "raw_score":           round(raw_score, 4),
+            "affected_lung_pct":   0.0,
+            "boundary_length_pct": 0.0,
+            "pleural_separation":  False,
+            "segmented_area_pct":  0.0,
+            "heatmap_base64":      None,
+        }
+
+    # ═══ ONLY RUNS IF PNEUMOTHORAX DETECTED ════════════════════
     efficientnet = model.layers[1]
 
     # ── STEP 1: Standard Grad-CAM ──────────────────────────────
@@ -224,18 +288,17 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
     _, buffer      = cv2.imencode(".png", overlay_bgr)
     overlay_base64 = base64.b64encode(buffer).decode("utf-8")
 
-    # ── STEP 9: Prediction ─────────────────────────────────────
-    raw_score  = float(model.predict(img_batch, verbose=0)[0][0])
-    label      = "Pneumothorax Detected" if raw_score >= 0.5 else "Normal"
-    confidence = round(raw_score * 100, 2) if raw_score >= 0.5 \
-                 else round((1 - raw_score) * 100, 2)
-
-    # ── Precise Pleural Line via U-Net ─────────────────────────
+    # ── STEP 9: Precise Pleural Line via U-Net ─────────────────
     try:
         seg_mask, pleural_line = get_pleural_segmentation(gray_img)
 
         # Draw U-Net pleural line in bright YELLOW
         overlay[pleural_line > 0] = [255, 255, 0]
+
+        # Re-encode overlay after drawing the U-Net line
+        overlay_bgr    = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
+        _, buffer      = cv2.imencode(".png", overlay_bgr)
+        overlay_base64 = base64.b64encode(buffer).decode("utf-8")
 
         # Calculate segmented area
         seg_area_pct = round(
@@ -247,6 +310,10 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
         print(f"U-Net segmentation skipped: {e}")
         seg_area_pct = 0.0
 
+
+    # ── Generate Standard Grad-CAM for comparison ──────────────
+    standard_heatmap = generate_standard_gradcam_overlay(image_bytes)
+
     return {
         "prediction":              label,
         "confidence":              confidence,
@@ -254,7 +321,8 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
         "affected_lung_pct":       affected_pct,
         "boundary_length_pct":     boundary_length_pct,
         "pleural_separation":      bool(boundary_length_pct > 1.0),
-        "segmented_area_pct": float(seg_area_pct),
+        "segmented_area_pct":      float(seg_area_pct),
         "heatmap_base64":          overlay_base64,
+        "standard_heatmap_base64": standard_heatmap,
     }
 

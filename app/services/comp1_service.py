@@ -40,5 +40,6 @@ async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
     final_result.pop("_id", None)
     final_result["result_id"]     = str(saved_id)
     final_result["heatmap_base64"] = result["heatmap_base64"]
+    final_result["standard_heatmap_base64"] = result.get("standard_heatmap_base64")
 
     return final_result
