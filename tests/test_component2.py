@@ -5,7 +5,7 @@ import cv2
 import asyncio
 
 from app.ml_models.component2.inference import run_pneumonia_inference, InvalidXRayError
-from app.ml_models.component2.model import get_ood_shield_data
+from app.ml_models.component2.model import get_ood_shield_data, get_tb_shield_data
 
 class TestComponent2Pneumonia(unittest.TestCase):
     def setUp(self):
@@ -52,6 +52,18 @@ class TestComponent2Pneumonia(unittest.TestCase):
             mock_encoder.predict.assert_called_once()
             
         print("Valid image passed OOD shield and ran inference successfully.")
+
+    @patch('app.ml_models.component2.inference.get_autoencoder')
+    def test_tb_shield_rejects_closer_to_tb_centroid(self, mock_get_autoencoder):
+        """TB shield should reject embeddings at the TB centroid."""
+        tb_centroid, _ = get_tb_shield_data()
+
+        mock_encoder = MagicMock()
+        mock_encoder.predict.return_value = np.expand_dims(tb_centroid, axis=0)
+        mock_get_autoencoder.return_value = (None, mock_encoder)
+
+        with self.assertRaises(InvalidXRayError):
+            run_pneumonia_inference(self.dummy_image)
 
     @patch('app.api.v1.component2_pneumonia.cv2.imdecode')
     @patch('app.api.v1.component2_pneumonia.run_pneumonia_inference')
