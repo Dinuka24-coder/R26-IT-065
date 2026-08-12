@@ -36,7 +36,7 @@ def run_pneumonia_inference(original_img):
     Pipeline:
         1. Preprocess: resize 224x224 + CLAHE (LAB color space)
         2. OOD gatekeeper: autoencoder embedding → Euclidean distance to pneumonia centroid
-        3. TB shield: reject embeddings closer to the TB centroid than pneumonia centroid
+        3. TB shield: reject if within TB cluster and closer to TB than pneumonia centroid
         4. Classification: MobileNetV2 with preprocess_input ([-1, 1] scaling)
         5. Grad-CAM + severity metrics
     """
