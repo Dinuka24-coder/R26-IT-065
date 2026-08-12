@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import connect_db, close_db, get_database
@@ -7,24 +6,20 @@ from app.api.v1.router import router
 from fastapi.staticfiles import StaticFiles
 
 
-
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI(
     title="Pulmonary CDSS API",
     description="Unified Clinical Decision Support System for Pulmonary Diseases",
     version="1.0.0"
 )
 
-# Single consolidated CORS middleware configuration
+# ── Single CORS middleware ─────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
         "http://localhost:5173",
+        "http://localhost:3000",
         "http://127.0.0.1:5173",
-        "null"  # Allow direct file:// loads (origin is 'null' in browsers)
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
