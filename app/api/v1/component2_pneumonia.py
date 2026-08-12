@@ -48,6 +48,7 @@ async def predict_pneumonia(
             "filename": file.filename,
             "diagnosis": diagnosis,
             "confidence": f"{confidence:.2f}%",
+            "severity": severity,
             "affected_area_percent": heatmap_sev["affected_area_percent"],
             "mean_intensity": heatmap_sev["mean_intensity"],
             "explanation_image": heatmap_base64 if include_explanation_image else None
