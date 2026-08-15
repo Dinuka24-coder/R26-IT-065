@@ -21,7 +21,7 @@ def preprocess(image_bytes: bytes) -> np.ndarray:
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
     # Resize
-    img = cv2.resize(img, IMG_SIZE)
+    img = cv2.resize(img, IMG_SIZE, interpolation=cv2.INTER_NEAREST)
 
     # Normalize
     img = img.astype(np.float32) / 255.0

@@ -12,8 +12,15 @@ HEATMAP_DIR = "static/gradcam/component4"
 os.makedirs(HEATMAP_DIR, exist_ok=True)
 
 
-def generate_gradcam(image_bytes: bytes, layer_name: str = "texture_conv_4") -> str:
-    model = get_model()
+def generate_gradcam(image_bytes: bytes, model=None, layer_name: str = "texture_conv_4") -> str:
+    # model=None preserves EXACT existing behavior for every current
+    # caller (PNG/JPG path) - only get_model() (the original PNG/JPG
+    # model) is used unless a caller explicitly passes a different
+    # model (the DICOM model, from comp4_service.py's DICOM-specific
+    # functions). Same texture_conv_4 target layer works for both,
+    # since both share the same architecture.
+    if model is None:
+        model = get_model()
 
     img_array = preprocess(image_bytes)
 
