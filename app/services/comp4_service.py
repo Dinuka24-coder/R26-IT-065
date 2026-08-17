@@ -5,6 +5,7 @@ from app.ml_models.component4.dicom_inference import predict_dicom
 from app.ml_models.component4.gradcam import generate_gradcam
 from app.ml_models.component4.dicom_model import get_dicom_model
 from app.ml_models.component4.lung_ct_validation import check_lung_ct_suitability
+from app.ml_models.component4.mobilenet_ood import check_mobilenet_ood
 from app.ml_models.component4.segmentation import run_segmentation
 from app.ml_models.component4.dicom.series import get_series_store
 from app.ml_models.component4.dicom.windowing import resolve_window
@@ -33,15 +34,42 @@ class DicomSeriesNotFoundError(ValueError):
 async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
     """Existing PNG/JPG prediction path.
 
-    UNCHANGED except for one addition: the lung CT suitability gate
-    (Level 2 validation) now runs before classification, per the
-    requirement that PNG/JPG get the same gate as DICOM. Nothing else
-    about this function's behavior has changed.
+    Now runs TWO suitability gates in sequence before classification:
+      1. check_lung_ct_suitability() - existing Level 2 pixel-statistics
+         check (aspect ratio, intensity std, color saturation).
+      2. check_mobilenet_ood() - NEW, feature-space suitability check
+         (MobileNetV2 centroid distance). Added because Level 2 alone
+         cannot distinguish a chest X-ray from a lung CT slice - both
+         are grayscale, reasonably shaped, real medical images. Uses
+         the already-calibrated, already-verified centroid/threshold
+         unchanged - see mobilenet_ood.py.
+
+    Either gate can reject; both map to the same LungCtSuitabilityError
+    -> same 4xx "unsuitable for this component" response the API layer
+    already handles. No new response structure, no new exception type.
+
+    Everything after both gates - predict(), generate_gradcam(), the
+    result shape, save_result() - is UNCHANGED.
     """
     # --- Stage: Lung CT suitability validation (Level 2) ---
     validation_result = check_lung_ct_suitability(image_bytes)
     if not validation_result.is_valid:
+        print("❌ Component 4 image REJECTED — Level 2 CT suitability validation")
+        print(f"   Reasons: {validation_result.reasons}")
         raise LungCtSuitabilityError(validation_result.reasons)
+    print("✅ Component 4 Level 2 validation PASSED")
+
+    # --- Stage: Feature-space suitability / OOD validation (MobileNetV2) ---
+    ood_result = check_mobilenet_ood(image_bytes)
+    if not ood_result.is_valid:
+        print("❌ Component 4 image REJECTED — MobileNetV2 OOD validation")
+        print(f"   Distance: {ood_result.distance:.4f}")
+        print(f"   Threshold: {ood_result.threshold}")
+        print(f"   Reasons: {ood_result.reasons}")
+        raise LungCtSuitabilityError(ood_result.reasons)
+    print("✅ Component 4 MobileNetV2 OOD validation PASSED")
+
+    print("🔬 Component 4 image PASSED all suitability checks — running cancer classification")
 
     # --- Stage: Cancer classification (unchanged) ---
     result = predict(image_bytes)
