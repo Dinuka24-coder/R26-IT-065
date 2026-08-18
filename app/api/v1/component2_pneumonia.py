@@ -15,7 +15,7 @@ async def pneumonia_status():
 
 @router.post("/predict")
 async def predict_pneumonia(
-    patient_id: str = Form(...), # NEW: Ask the user for the Patient ID
+    patient_id: str = Form(...),
     include_explanation_image: bool = Form(False),
     file: UploadFile = File(...)
 ):
@@ -31,14 +31,16 @@ async def predict_pneumonia(
         # 2. Run the AI Math
         diagnosis, confidence, severity, heatmap_base64, heatmap_sev = run_pneumonia_inference(img)
 
-        # 3. Save to MongoDB using the Service
+        # 3. Save to MongoDB using the Service with complete metrics
         db_record_id = await save_pneumonia_prediction(
             patient_id=patient_id,
             filename=file.filename,
             diagnosis=diagnosis,
             confidence=confidence,
             severity=severity,
-            heatmap_base64=heatmap_base64
+            heatmap_base64=heatmap_base64,
+            affected_area_percent=heatmap_sev.get("affected_area_percent") if heatmap_sev else None,
+            mean_intensity=heatmap_sev.get("mean_intensity") if heatmap_sev else None,
         )
 
         # 4. Return the result to the screen (including quantitative attention metrics)
@@ -49,8 +51,8 @@ async def predict_pneumonia(
             "diagnosis": diagnosis,
             "confidence": f"{confidence:.2f}%",
             "severity": severity,
-            "affected_area_percent": heatmap_sev["affected_area_percent"],
-            "mean_intensity": heatmap_sev["mean_intensity"],
+            "affected_area_percent": heatmap_sev["affected_area_percent"] if heatmap_sev else None,
+            "mean_intensity": heatmap_sev["mean_intensity"] if heatmap_sev else None,
             "explanation_image": heatmap_base64 if include_explanation_image else None
         }
 
@@ -59,4 +61,4 @@ async def predict_pneumonia(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Pneumonia inference or database save failed")
-        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again later.")
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again later.")
