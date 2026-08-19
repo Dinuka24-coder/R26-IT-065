@@ -7,9 +7,10 @@ from app.ml_models.component4.dicom_model import get_dicom_model
 from app.ml_models.component4.lung_ct_validation import check_lung_ct_suitability
 from app.ml_models.component4.mobilenet_ood import check_mobilenet_ood
 from app.ml_models.component4.segmentation import run_segmentation
-from app.ml_models.component4.dicom.series import get_series_store
+from app.ml_models.component4.dicom.series import get_series_store, group_by_acquisition
 from app.ml_models.component4.dicom.windowing import resolve_window
 from app.ml_models.component4.dicom.renderer import render_slice_to_png_bytes
+from app.ml_models.component4.dicom.volume import build_volume, VolumeGeometryError
 from app.repositories.result_repo import save_result
 
 
@@ -29,6 +30,27 @@ class LungCtSuitabilityError(ValueError):
 
 class DicomSeriesNotFoundError(ValueError):
     """Raised when a series_id is unknown or has expired from the cache."""
+
+
+class MultipleAcquisitionsError(ValueError):
+    """Raised when a volume is requested WITHOUT specifying which
+    acquisition, but the series genuinely contains more than one
+    acquisition candidate. Never silently resolved by picking one - the
+    caller must specify acquisition_number explicitly, per the approved
+    architecture's constraint against automatic selection.
+
+    Carries the real list of available acquisitions (as already-computed
+    dicts from get_series_acquisitions()) so the API layer can return a
+    useful, actionable error rather than a bare message.
+    """
+
+    def __init__(self, series_id: str, acquisitions: list[dict]):
+        self.series_id = series_id
+        self.acquisitions = acquisitions
+        super().__init__(
+            f"Series \'{series_id}\' contains {len(acquisitions)} acquisitions - "
+            f"an acquisition_number must be specified explicitly."
+        )
 
 
 async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
@@ -285,3 +307,113 @@ async def run_dicom_volume_prediction(
         "per_slice_results": per_slice_results,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+async def get_dicom_volume(series_id: str, acquisition_number: str | None = None):
+    """MODIFIED (backward compatible) - now accepts an optional
+    acquisition_number.
+
+    When acquisition_number is None (the existing calling convention,
+    unchanged for every existing caller):
+      - if the series resolves to exactly ONE acquisition group (the
+        521 real single-acquisition series, AND the 42 real
+        missing-AcquisitionNumber series - both cases behave identically
+        here, since group_by_acquisition() already collapses both to one
+        group) - that one group is used automatically. EXACT existing
+        behavior, byte-for-byte, for every series that does not need
+        acquisition selection at all.
+      - if the series resolves to MULTIPLE acquisition groups (the 90
+        real multi-acquisition series), raises MultipleAcquisitionsError
+        rather than silently choosing one - never guesses, per the
+        approved architecture.
+
+    When acquisition_number is provided, selects that specific group by
+    matching AcquisitionGroup.acquisition_number == acquisition_number
+    (as a string) - raises ValueError if no such acquisition exists in
+    this series.
+
+    Reuses the exact same DicomSeriesNotFoundError already used
+    elsewhere. VolumeGeometryError propagates unchanged from
+    build_volume() - the router maps it to 422, exactly as before.
+
+    build_volume() is called exactly once per invocation, on exactly
+    ONE group's datasets - never merges groups, never called on more
+    than the selected candidate acquisition.
+    """
+    store = get_series_store()
+    series = store.get(series_id)
+    if series is None:
+        raise DicomSeriesNotFoundError(
+            f"DICOM series '{series_id}' was not found or has expired. "
+            f"Please re-upload."
+        )
+
+    groups = group_by_acquisition(series.datasets)
+
+    if acquisition_number is None:
+        if len(groups) == 1:
+            target_group = groups[0]
+        else:
+            acquisitions = get_series_acquisitions(series_id)
+            raise MultipleAcquisitionsError(series_id, acquisitions)
+    else:
+        matching = [
+            g for g in groups if g.acquisition_number == str(acquisition_number)
+        ]
+        if not matching:
+            raise ValueError(
+                f"Acquisition '{acquisition_number}' not found in series "
+                f"'{series_id}'."
+            )
+        target_group = matching[0]
+
+    volume = build_volume(target_group.datasets)
+    return volume
+
+def get_series_acquisitions(series_id: str) -> list[dict]:
+    """Returns each candidate acquisition for a series with its REAL
+    build_volume() validity - never constructs/returns a full DicomVolume
+    here, only reports accept/reject + why, so this stays cheap to call
+    for listing purposes.
+
+    Reports only FACTUAL information already present in the DICOM tags
+    or computed by build_volume() - never assigns clinical meaning
+    (no "contrast phase", no "diagnostic", no "best" acquisition).
+    AcquisitionNumber=1 is reported as exactly that: the value "1",
+    nothing more.
+
+    build_volume() is called once per group - the REAL, unmodified
+    function, exactly as it already validates a whole series today.
+    """
+    store = get_series_store()
+    series = store.get(series_id)
+    if series is None:
+        raise DicomSeriesNotFoundError(
+            f"DICOM series \'{series_id}\' was not found or has expired. "
+            f"Please re-upload."
+        )
+
+    groups = group_by_acquisition(series.datasets)
+
+    results = []
+    for group in groups:
+        acquisition_times = sorted(set(
+            str(getattr(ds, "AcquisitionTime")) for ds in group.datasets
+            if hasattr(ds, "AcquisitionTime")
+        ))
+        try:
+            build_volume(group.datasets)
+            valid = True
+            rejection_reason = None
+        except VolumeGeometryError as exc:
+            valid = False
+            rejection_reason = str(exc)
+
+        results.append({
+            "acquisition_number": group.acquisition_number,
+            "slice_count": len(group.datasets),
+            "acquisition_time": acquisition_times,
+            "valid": valid,
+            "rejection_reason": rejection_reason,
+        })
+
+    return results
