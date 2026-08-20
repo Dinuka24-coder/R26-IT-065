@@ -105,6 +105,31 @@ async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
         "input_type": "PNG_JPG",
         "prediction": result["prediction"],
         "confidence": result["confidence"],
+        # Phase 1 Step 1: predict() already computed the full real softmax
+        # distribution (result["raw_scores"]) - it was simply never passed
+        # through to the API response before. Exposed here unchanged, no
+        # recomputation, no invented values. Named class_probabilities in
+        # the response for clarity, per the requested convention - the
+        # underlying dict and its values are exactly result["raw_scores"].
+        # PNG path only - the DICOM response (run_dicom_prediction,
+        # run_dicom_volume_prediction, below) is deliberately untouched.
+        "class_probabilities": result["raw_scores"],
+        # Phase 2: ood_result was already computed above (line 85) to
+        # decide accept/reject, then completely discarded - confirmed by
+        # direct inspection, this is the first time it's exposed. Only
+        # reachable here when is_valid was True (a False result already
+        # raised LungCtSuitabilityError before this point), so
+        # within_distribution is always True in this response - not
+        # fabricated, just a direct consequence of the existing gate's
+        # control flow. distance/threshold included for
+        # inspection/debugging, NOT intended as primary UI content (see
+        # Phase 2 audit: raw distance in a 1280-dim feature space has no
+        # intuitive meaning on its own).
+        "input_check": {
+            "within_distribution": ood_result.is_valid,
+            "distance": round(ood_result.distance, 4),
+            "threshold": ood_result.threshold,
+        },
         "heatmap_url": heatmap_url,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
