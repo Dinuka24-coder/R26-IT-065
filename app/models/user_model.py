@@ -25,6 +25,16 @@ class LoginRequest(BaseModel):
     email:    EmailStr
     password: str
 
+# ── Admin resets a doctor's password ───────────────────────────
+class PasswordReset(BaseModel):
+    new_password: str = Field(..., min_length=6, max_length=72)
+
+
+# ── User changes their own password ────────────────────────────
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password:     str = Field(..., min_length=6, max_length=72)
+
 
 # ── Response ───────────────────────────────────────────────────
 class UserResponse(BaseModel):
