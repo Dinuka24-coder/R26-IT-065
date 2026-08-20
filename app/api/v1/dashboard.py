@@ -1,8 +1,10 @@
+import asyncio
 from fastapi import APIRouter, Depends
 from datetime import datetime, timedelta
 from collections import defaultdict
 from app.core.dependencies import get_current_user
 from app.database import get_database
+from app.utils.collection_cache import collection_exists
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
@@ -13,80 +15,52 @@ COMPONENT_COLLECTIONS = {
     "lungcancer_results":   ("Lung Cancer",  "CT Scan"),
 }
 
+QUERY_TIMEOUT = 10.0
+MAX_DOCS      = 500
 
+
+# ── Shared helpers ─────────────────────────────────────────────
 async def _gather_all_results(db):
+    """Collect prediction results from all component collections."""
     records = []
 
-    # Only query collections that actually exist
-    existing = await db.list_collection_names()
-
     for coll, (disease, scan) in COMPONENT_COLLECTIONS.items():
-        if coll not in existing:
-            continue                     # ← skip missing collections
+        if not collection_exists(coll):        # instant — no DB round trip
+            continue
 
         try:
-            cursor = db[coll].find()
-            async for r in cursor:
-                positive = "Detected" in str(r.get("prediction", ""))
-                records.append({
-                    "patient_id": r.get("patient_id"),
-                    "doctor_id":  r.get("doctor_id"),
-                    "disease":    disease if positive else "Normal",
-                    "scan_type":  scan,
-                    "confidence": r.get("confidence", 0),
-                    "status":     "Positive" if positive else "Normal",
-                    "created_at": r.get("created_at"),
-                })
+            docs = await asyncio.wait_for(
+                db[coll].find().to_list(length=MAX_DOCS),
+                timeout=QUERY_TIMEOUT
+            )
         except Exception as e:
-            print(f"⚠️ Skipping {coll}: {e}")
-            continue                     # ← never crash the whole endpoint
+            print(f"⚠️ Skipping {coll}: {type(e).__name__}")
+            continue
+
+        for r in docs:
+            positive = "Detected" in str(r.get("prediction", ""))
+            records.append({
+                "patient_id": r.get("patient_id"),
+                "doctor_id":  r.get("doctor_id"),
+                "disease":    disease if positive else "Normal",
+                "scan_type":  scan,
+                "confidence": r.get("confidence", 0),
+                "status":     "Positive" if positive else "Normal",
+                "created_at": r.get("created_at"),
+            })
 
     return records
 
 
-@router.get("/stats")
-async def dashboard_stats(user=Depends(get_current_user)):
-    db = get_database()
-
-    total_patients = await db["patients"].count_documents({})
-    total_doctors  = await db["users"].count_documents({"role": "doctor"})
-    results        = await _gather_all_results(db)
-
-    total_scans = len(results)
-    positive    = sum(1 for r in results if r["status"] == "Positive")
-
-    # today's predictions
-    today = datetime.utcnow().date().isoformat()
-    today_count = sum(1 for r in results if str(r.get("created_at", "")).startswith(today))
-
-    return {
-        "total_patients":    total_patients,
-        "total_scans":       total_scans,
-        "positive_cases":    positive,
-        "positive_percent":  round(positive / total_scans * 100, 1) if total_scans else 0,
-        "total_doctors":     total_doctors,
-        "total_predictions": total_scans,
-        "today_predictions": today_count,
-        "role":              user["role"],
-    }
-
-
-@router.get("/weekly-volume")
-async def weekly_volume(user=Depends(get_current_user)):
-    """X-ray vs CT scan counts for the last 7 days."""
-    db = get_database()
-    results = await _gather_all_results(db)
-
+def _build_weekly(results):
     days = [(datetime.utcnow().date() - timedelta(days=i)) for i in range(6, -1, -1)]
     buckets = {d.isoformat(): {"xray": 0, "ct": 0} for d in days}
 
     for r in results:
         day = str(r.get("created_at", ""))[:10]
         if day in buckets:
-            if r["scan_type"] == "CT Scan":
-                buckets[day]["ct"] += 1
-            else:
-                buckets[day]["xray"] += 1
+            key = "ct" if r["scan_type"] == "CT Scan" else "xray"
+            buckets[day][key] += 1
 
     return [
         {
@@ -98,11 +72,7 @@ async def weekly_volume(user=Depends(get_current_user)):
     ]
 
 
-@router.get("/disease-distribution")
-async def disease_distribution(user=Depends(get_current_user)):
-    db = get_database()
-    results = await _gather_all_results(db)
-
+def _build_distribution(results):
     counts = defaultdict(int)
     for r in results:
         counts[r["disease"]] += 1
@@ -114,6 +84,110 @@ async def disease_distribution(user=Depends(get_current_user)):
     }
 
     return [
-        {"name": k, "value": v, "percent": round(v / total * 100), "color": colors.get(k, "#94a3b8")}
+        {"name": k, "value": v, "percent": round(v / total * 100),
+         "color": colors.get(k, "#94a3b8")}
         for k, v in sorted(counts.items(), key=lambda x: -x[1])
     ]
+
+
+def _build_stats(results, total_patients, total_doctors, role):
+    total_scans = len(results)
+    positive    = sum(1 for r in results if r["status"] == "Positive")
+    today       = datetime.utcnow().date().isoformat()
+    today_count = sum(1 for r in results if str(r.get("created_at", "")).startswith(today))
+
+    return {
+        "total_patients":    total_patients,
+        "total_scans":       total_scans,
+        "positive_cases":    positive,
+        "positive_percent":  round(positive / total_scans * 100, 1) if total_scans else 0,
+        "total_doctors":     total_doctors,
+        "total_predictions": total_scans,
+        "today_predictions": today_count,
+        "role":              role,
+    }
+
+
+async def _safe_count(db, coll, query=None):
+    try:
+        return await asyncio.wait_for(
+            db[coll].count_documents(query or {}), timeout=QUERY_TIMEOUT
+        )
+    except Exception as e:
+        print(f"⚠️ Count failed on {coll}: {type(e).__name__}")
+        return 0
+
+
+# ── COMBINED ENDPOINT (use this from the frontend) ─────────────
+@router.get("/overview")
+async def dashboard_overview(user=Depends(get_current_user)):
+    """
+    Everything the dashboard needs in ONE request:
+    stats, weekly volume, disease distribution, and recent activity.
+    """
+    db = get_database()
+
+    total_patients = await _safe_count(db, "patients")
+    total_doctors  = await _safe_count(db, "users", {"role": "doctor"})
+    results        = await _gather_all_results(db)
+
+    # Name lookups for recent activity
+    pmap, dmap = {}, {}
+    try:
+        patients = await asyncio.wait_for(
+            db["patients"].find().to_list(length=MAX_DOCS), timeout=QUERY_TIMEOUT
+        )
+        pmap = {str(p["_id"]): p.get("full_name", "—") for p in patients}
+    except Exception as e:
+        print(f"⚠️ Patient lookup failed: {type(e).__name__}")
+
+    try:
+        doctors = await asyncio.wait_for(
+            db["users"].find({"role": {"$in": ["doctor", "admin"]}}).to_list(length=200),
+            timeout=QUERY_TIMEOUT
+        )
+        dmap = {str(d["_id"]): d.get("full_name", "—") for d in doctors}
+    except Exception as e:
+        print(f"⚠️ Doctor lookup failed: {type(e).__name__}")
+
+    recent = sorted(results, key=lambda x: x.get("created_at") or "", reverse=True)[:6]
+    recent = [
+        {
+            **r,
+            "patient_name": pmap.get(str(r.get("patient_id")), "—"),
+            "doctor_name":  dmap.get(str(r.get("doctor_id")), "—"),
+            "date":         r.get("created_at"),
+        }
+        for r in recent
+    ]
+
+    return {
+        "stats":        _build_stats(results, total_patients, total_doctors, user["role"]),
+        "weekly":       _build_weekly(results),
+        "distribution": _build_distribution(results),
+        "recent":       recent,
+    }
+
+
+# ── Individual endpoints (kept for compatibility / testing) ────
+@router.get("/stats")
+async def dashboard_stats(user=Depends(get_current_user)):
+    db = get_database()
+    total_patients = await _safe_count(db, "patients")
+    total_doctors  = await _safe_count(db, "users", {"role": "doctor"})
+    results        = await _gather_all_results(db)
+    return _build_stats(results, total_patients, total_doctors, user["role"])
+
+
+@router.get("/weekly-volume")
+async def weekly_volume(user=Depends(get_current_user)):
+    db = get_database()
+    results = await _gather_all_results(db)
+    return _build_weekly(results)
+
+
+@router.get("/disease-distribution")
+async def disease_distribution(user=Depends(get_current_user)):
+    db = get_database()
+    results = await _gather_all_results(db)
+    return _build_distribution(results)
