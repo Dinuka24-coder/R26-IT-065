@@ -17,9 +17,12 @@ async def login_user(email: str, password: str):
         "access_token": token,
         "token_type":   "bearer",
         "user": {
-            "id":        str(user["_id"]),
-            "full_name": user["full_name"],
-            "email":     user["email"],
-            "role":      user["role"],
+            "id":                   str(user["_id"]),
+            "full_name":            user["full_name"],
+            "email":                user["email"],
+            "role":                 user["role"],
+            "contact_number":       user.get("contact_number"),
+            "registered_number":    user.get("registered_number"),
+            "must_change_password": user.get("must_change_password", False),
         }
     }

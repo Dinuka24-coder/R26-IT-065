@@ -4,6 +4,7 @@ from app.database import connect_db, close_db, get_database
 from app.config import settings
 from app.api.v1.router import router
 from fastapi.staticfiles import StaticFiles
+from app.utils.collection_cache import refresh_collection_cache
 
 
 app = FastAPI(
@@ -57,3 +58,8 @@ async def test_db():
         "database": settings.MONGO_DB_NAME,
         "collections": collections
     }
+
+@app.on_event("startup")
+async def startup():
+    await connect_db()
+    await refresh_collection_cache(get_database())

@@ -1,10 +1,11 @@
 from fastapi import HTTPException
 from datetime import datetime
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.repositories.user_repo import (
     create_user, get_user_by_email, get_all_doctors,
     update_user, delete_user, get_user_by_id
 )
+
 
 
 async def create_doctor(data: dict):
@@ -62,3 +63,32 @@ async def remove_doctor(doctor_id: str):
 
     await delete_user(doctor_id)
     return {"message": "Doctor deleted successfully"}
+
+async def reset_doctor_password(doctor_id: str, new_password: str):
+    """Admin resets a doctor's password. Forces change on next login."""
+    user = await get_user_by_id(doctor_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    if user.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Cannot reset admin password here")
+
+    await update_user(doctor_id, {
+        "password": hash_password(new_password),
+        "must_change_password": True,
+    })
+    return {"message": "Password reset successfully. The doctor must change it on next login."}
+
+
+async def change_own_password(current_user: dict, current_password: str, new_password: str):
+    """Any logged-in user changes their own password."""
+    if not verify_password(current_password, current_user["password"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if current_password == new_password:
+        raise HTTPException(status_code=400, detail="New password must be different")
+
+    await update_user(str(current_user["_id"]), {
+        "password": hash_password(new_password),
+        "must_change_password": False,
+    })
+    return {"message": "Password changed successfully"}

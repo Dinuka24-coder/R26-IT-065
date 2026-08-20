@@ -5,17 +5,33 @@ import cv2
 # These values represent typical chest X-ray characteristics
 # Computed from the training dataset statistics
 XRAY_REFERENCE = {
-    "mean_intensity":     0.45,   # X-rays have medium-dark average
-    "std_intensity":      0.24,   # good spread of light/dark
-    "grayscale_ratio":    0.98,   # X-rays are nearly pure grayscale
-    "vertical_symmetry":  0.75,   # chest is roughly symmetric L-R
-    "edge_density":       0.12,   # moderate edges (ribs, organs)
-    "dark_corner_ratio":  0.65,   # corners usually dark
+    "mean_intensity":     0.45,
+    "std_intensity":      0.24,
+    "grayscale_ratio":    0.98,
+    "vertical_symmetry":  0.75,
+    "edge_density":       0.12,
+    "dark_corner_ratio":  0.65,
+    "central_darkness":   0.55,   # chest: dark lungs → high value
+    "vertical_gradient":  0.15,   # chest: brighter at bottom
+    "bright_ratio":       0.05,   # chest: few very-bright pixels
 }
 
 # Distance threshold — tuned empirically
 DISTANCE_THRESHOLD = 0.35
 
+# Chest X-rays are roughly square (0.7 – 1.4)
+MIN_ASPECT_RATIO = 0.70
+MAX_ASPECT_RATIO = 1.45
+
+
+def check_aspect_ratio(image_bytes: bytes):
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return False, 0.0
+    h, w = img.shape
+    ratio = w / h
+    return (MIN_ASPECT_RATIO <= ratio <= MAX_ASPECT_RATIO), round(ratio, 3)
 
 def extract_features(image_bytes: bytes) -> dict:
     """Extract statistical features from an uploaded image"""
@@ -66,13 +82,32 @@ def extract_features(image_bytes: bytes) -> dict:
     corner_mean      = np.mean([c.mean() for c in corners])
     dark_corner_ratio = float(1.0 - corner_mean)
 
+    # ── Feature 7: Central lung darkness ───────────────────────
+    # Chest X-rays have DARK lung fields in the upper-middle region.
+    # Dental panos have BRIGHT teeth/bone there.
+    upper_middle = img_norm[40:120, 60:164]
+    central_darkness = float(1.0 - upper_middle.mean())
+
+    # ── Feature 8: Vertical intensity gradient ─────────────────
+    # Chest: dark lungs on top, brighter abdomen/diaphragm below.
+    top_third = img_norm[:75, :].mean()
+    bottom_third = img_norm[149:, :].mean()
+    vertical_gradient = float(bottom_third - top_third)
+
+    # ── Feature 9: Bright pixel ratio ──────────────────────────
+    # Dental images have many very bright pixels (enamel, fillings).
+    bright_ratio = float(np.sum(img_norm > 0.75) / img_norm.size)
+
     return {
-        "mean_intensity":    mean_intensity,
-        "std_intensity":     std_intensity,
-        "grayscale_ratio":   grayscale_ratio,
+        "mean_intensity": mean_intensity,
+        "std_intensity": std_intensity,
+        "grayscale_ratio": grayscale_ratio,
         "vertical_symmetry": symmetry,
-        "edge_density":      edge_density,
+        "edge_density": edge_density,
         "dark_corner_ratio": dark_corner_ratio,
+        "central_darkness": central_darkness,  # NEW
+        "vertical_gradient": vertical_gradient,  # NEW
+        "bright_ratio": bright_ratio,  # NEW
     }
 
 
@@ -92,30 +127,33 @@ def compute_euclidean_distance(features: dict) -> float:
 
 
 def is_xray(image_bytes: bytes) -> dict:
-    """
-    Validate if uploaded image is a chest X-ray
-    using Euclidean distance from reference profile
-    """
     try:
+        # ── Gate 1: aspect ratio ────────────────────────────
+        ratio_ok, ratio = check_aspect_ratio(image_bytes)
+        if not ratio_ok:
+            print(f"❌ Rejected: aspect ratio {ratio} outside chest X-ray range")
+            return {
+                "is_xray": False,
+                "reason": f"Image proportions ({ratio}) don't match a chest X-ray. "
+                          f"This looks like a different type of scan.",
+                "aspect_ratio": ratio,
+            }
+
+        # ── Gate 2: feature distance ────────────────────────
         features = extract_features(image_bytes)
         distance = compute_euclidean_distance(features)
-
         is_valid = distance <= DISTANCE_THRESHOLD
 
-        # Confidence score (inverse of distance, normalized)
-        confidence = max(0, min(100, (1 - distance / DISTANCE_THRESHOLD) * 100))
+        print(f"🔍 distance={distance:.4f} ratio={ratio} → {'PASS' if is_valid else 'REJECT'}")
 
         return {
-            "is_xray":         is_valid,
-            "distance":        round(distance, 4),
-            "threshold":       DISTANCE_THRESHOLD,
-            "confidence":      round(confidence, 2),
-            "features":        {k: round(v, 3) for k, v in features.items()},
+            "is_xray":      is_valid,
+            "distance":     round(distance, 4),
+            "threshold":    DISTANCE_THRESHOLD,
+            "aspect_ratio": ratio,
+            "confidence":   round(max(0, min(100, (1 - distance/DISTANCE_THRESHOLD) * 100)), 2),
+            "features":     {k: round(v, 3) for k, v in features.items()},
         }
 
     except Exception as e:
-        return {
-            "is_xray":  False,
-            "distance": None,
-            "error":    str(e),
-        }
+        return {"is_xray": False, "error": str(e)}
