@@ -21,6 +21,7 @@ async def process_tb_scan(patient_id: str, file: UploadFile) -> TBPredictionResp
             "confidence": raw_result["confidence"],
             "raw_score": raw_result["raw_score"],
             "requires_clinical_review": raw_result["requires_clinical_review"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "timestamp": datetime.now(timezone.utc)
         }
         

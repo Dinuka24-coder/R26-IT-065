@@ -5,6 +5,7 @@ from app.api.v1 import (
     component2_pneumonia,
     component3_tuberculosis,
     component4_lung_cancer,
+    screening
 )
 
 router = APIRouter()
@@ -15,7 +16,7 @@ router.include_router(users.router)
 router.include_router(patients.router)
 router.include_router(reports.router)
 router.include_router(dashboard.router)
-
+router.include_router(screening.router)
 # These need prefixes here (if not defined in their files)
 router.include_router(component1_pneumothorax.router, prefix="/pneumothorax", tags=["Component 1 - Pneumothorax"])
 router.include_router(component2_pneumonia.router,    prefix="/pneumonia",    tags=["Component 2 - Pneumonia"])

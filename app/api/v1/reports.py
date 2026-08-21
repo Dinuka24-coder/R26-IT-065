@@ -10,11 +10,51 @@ COMPONENT_COLLECTIONS = {
     "pneumothorax_results": ("Pneumothorax", "X-ray"),
     "pneumonia_results":    ("Pneumonia",    "X-ray"),
     "tuberculosis_results": ("Tuberculosis", "X-ray"),
-    "lungcancer_results":   ("Lung Cancer",  "CT Scan"),
+    "lung_cancer_results":  ("Lung Cancer",  "CT Scan"),
 }
 
 QUERY_TIMEOUT = 10.0
 MAX_DOCS      = 1000
+
+POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal")
+NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear")
+CANCER_MARKERS   = ("carcinoma", "adenocarcinoma", "nodule")
+
+
+def _is_positive(record) -> bool:
+    """Normalize the varying prediction wording used across components."""
+    text = str(record.get("prediction") or record.get("diagnosis") or "").lower().strip()
+    if not text:
+        return False
+    if any(m in text for m in NEGATIVE_MARKERS):
+        return False
+    if any(m in text for m in POSITIVE_MARKERS):
+        return True
+    # Component 4 returns raw cancer subtype names
+    if any(c in text for c in CANCER_MARKERS):
+        return True
+    return str(record.get("status", "")).lower() == "positive"
+
+
+def _get_created_at(r):
+    """Component 3 stores only `timestamp`; the others store `created_at`."""
+    if r.get("created_at"):
+        return r["created_at"]
+    ts = r.get("timestamp")
+    if hasattr(ts, "isoformat"):
+        return ts.isoformat()
+    return str(ts) if ts else None
+
+
+def _disease_label(record, positive: bool, default_label: str, collection: str) -> str:
+    """Show the specific cancer subtype rather than a generic label."""
+    if not positive:
+        return "Normal"
+    if collection == "lung_cancer_results":
+        raw = str(record.get("prediction") or "").strip()
+        if raw:
+            return raw.replace(".", " ").title()
+    return default_label
 
 
 async def _safe_to_list(cursor, label: str, limit: int = MAX_DOCS):
@@ -59,16 +99,16 @@ async def history_report(patient_id: str = None, doctor_id: str = None,
         docs = await _safe_to_list(db[coll].find(query), coll)
 
         for r in docs:
-            positive = "Detected" in str(r.get("prediction", ""))
+            positive = _is_positive(r)
             records.append({
                 "patient_id":   r.get("patient_id"),
                 "patient_name": patient_map.get(str(r.get("patient_id")), "—"),
                 "doctor_id":    r.get("doctor_id"),
                 "doctor_name":  doctor_map.get(str(r.get("doctor_id")), "—"),
-                "date":         r.get("created_at"),
-                "disease":      disease if positive else "Normal",
+                "date":         _get_created_at(r),
+                "disease":      _disease_label(r, positive, disease, coll),
                 "scan_type":    scan,
-                "confidence":   r.get("confidence", 0),
+                "confidence":   float(r.get("confidence") or 0),
                 "status":       "Positive" if positive else "Normal",
             })
 
