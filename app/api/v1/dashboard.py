@@ -12,12 +12,35 @@ COMPONENT_COLLECTIONS = {
     "pneumothorax_results": ("Pneumothorax", "X-ray"),
     "pneumonia_results":    ("Pneumonia",    "X-ray"),
     "tuberculosis_results": ("Tuberculosis", "X-ray"),
-    "lungcancer_results":   ("Lung Cancer",  "CT Scan"),
+    "lung_cancer_results":   ("Lung Cancer",  "CT Scan"),
 }
 
 QUERY_TIMEOUT = 10.0
 MAX_DOCS      = 500
 
+POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal")
+NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear")
+
+def _is_positive(record) -> bool:
+    text = str(record.get("prediction") or record.get("diagnosis") or "").lower().strip()
+    if not text:
+        return False
+    if any(m in text for m in NEGATIVE_MARKERS):
+        return False
+    if any(m in text for m in POSITIVE_MARKERS):
+        return True
+    # Component 4 returns raw cancer subtype names
+    if any(c in text for c in ("carcinoma", "adenocarcinoma", "nodule")):
+        return True
+    return str(record.get("status", "")).lower() == "positive"
+
+def _get_created_at(r):
+    if r.get("created_at"):
+        return r["created_at"]
+    ts = r.get("timestamp")
+    if hasattr(ts, "isoformat"):
+        return ts.isoformat()
+    return str(ts) if ts else None
 
 # ── Shared helpers ─────────────────────────────────────────────
 async def _gather_all_results(db):
@@ -38,7 +61,7 @@ async def _gather_all_results(db):
             continue
 
         for r in docs:
-            positive = "Detected" in str(r.get("prediction", ""))
+            positive = _is_positive(r)
             records.append({
                 "patient_id": r.get("patient_id"),
                 "doctor_id":  r.get("doctor_id"),
@@ -46,7 +69,7 @@ async def _gather_all_results(db):
                 "scan_type":  scan,
                 "confidence": r.get("confidence", 0),
                 "status":     "Positive" if positive else "Normal",
-                "created_at": r.get("created_at"),
+                "created_at": _get_created_at(r),
             })
 
     return records
