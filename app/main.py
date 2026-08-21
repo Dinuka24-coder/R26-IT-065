@@ -1,16 +1,21 @@
+import os
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 from app.database import connect_db, close_db, get_database
 from app.config import settings
 from app.api.v1.router import router
-from fastapi.staticfiles import StaticFiles
 from app.utils.collection_cache import refresh_collection_cache
 
 
 app = FastAPI(
     title="Pulmonary CDSS API",
     description="Unified Clinical Decision Support System for Pulmonary Diseases",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # ── Single CORS middleware ─────────────────────────────────────
@@ -27,27 +32,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount(
-    "/static",
-    StaticFiles(directory="static"),
-    name="static"
-)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Register routes
+# ── Routes ─────────────────────────────────────────────────────
 app.include_router(router, prefix=settings.API_PREFIX)
 
-# DB lifecycle
+
+# ── Lifecycle (ONE startup handler only) ───────────────────────
 @app.on_event("startup")
 async def startup():
     await connect_db()
+    await refresh_collection_cache(get_database())
+
 
 @app.on_event("shutdown")
 async def shutdown():
     await close_db()
 
+
+# ── Health checks ──────────────────────────────────────────────
 @app.get("/")
 async def root():
     return {"message": "Pulmonary CDSS API is running"}
+
 
 @app.get("/test-db")
 async def test_db():
@@ -56,10 +63,5 @@ async def test_db():
     return {
         "status": "✅ Connected",
         "database": settings.MONGO_DB_NAME,
-        "collections": collections
+        "collections": collections,
     }
-
-@app.on_event("startup")
-async def startup():
-    await connect_db()
-    await refresh_collection_cache(get_database())
