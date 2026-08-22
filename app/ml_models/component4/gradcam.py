@@ -12,7 +12,27 @@ HEATMAP_DIR = "static/gradcam/component4"
 os.makedirs(HEATMAP_DIR, exist_ok=True)
 
 
-def generate_gradcam(image_bytes: bytes, model=None, layer_name: str = "texture_conv_4") -> str:
+def generate_gradcam(
+    image_bytes: bytes,
+    model=None,
+    layer_name: str = "texture_conv_4",
+    return_heatmap_only: bool = False,
+):
+    """Returns a str (the overlay URL) by default - EXACT existing
+    behavior for every current caller (both PNG and DICOM), unchanged.
+
+    return_heatmap_only=True is a NEW, opt-in-only parameter: when set,
+    ALSO saves the raw heatmap_color image (the colormap BEFORE
+    blending with the original - already computed below, previously
+    always discarded after compositing) as a second file, and returns
+    a (overlay_url, heatmap_only_url) tuple instead of a bare string.
+
+    Default remains False specifically so every existing call site -
+    both the PNG path (until updated) and the DICOM path
+    (comp4_service.py's generate_gradcam(rendered_png_bytes,
+    model=get_dicom_model())), which is NOT touched by this change -
+    continues receiving exactly the same str return value as before.
+    """
     # model=None preserves EXACT existing behavior for every current
     # caller (PNG/JPG path) - only get_model() (the original PNG/JPG
     # model) is used unless a caller explicitly passes a different
@@ -72,4 +92,18 @@ def generate_gradcam(image_bytes: bytes, model=None, layer_name: str = "texture_
 
     cv2.imwrite(save_path, overlay)
 
-    return f"/static/gradcam/component4/{filename}"
+    overlay_url = f"/static/gradcam/component4/{filename}"
+
+    if not return_heatmap_only:
+        return overlay_url
+
+    # heatmap_color was already computed above for the overlay blend -
+    # this just saves it as its own file too, rather than discarding it.
+    # Same uuid stem as the overlay, distinct suffix, so both files from
+    # one analysis are identifiable as a pair.
+    heatmap_filename = filename.replace("_gradcam.png", "_gradcam_heatmap.png")
+    heatmap_save_path = os.path.join(HEATMAP_DIR, heatmap_filename)
+    cv2.imwrite(heatmap_save_path, heatmap_color)
+    heatmap_only_url = f"/static/gradcam/component4/{heatmap_filename}"
+
+    return overlay_url, heatmap_only_url

@@ -97,7 +97,12 @@ async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
     result = predict(image_bytes)
 
     # --- Stage: Grad-CAM explanation (unchanged) ---
-    heatmap_url = generate_gradcam(image_bytes)
+    # Phase 3: opts into the new return_heatmap_only=True path - the
+    # DICOM call site below (run_dicom_prediction) is NOT touched and
+    # keeps calling generate_gradcam() with the default
+    # return_heatmap_only=False, receiving the exact same bare overlay
+    # URL string as before this change.
+    heatmap_url, heatmap_only_url = generate_gradcam(image_bytes, return_heatmap_only=True)
 
     final_result = {
         "patient_id": patient_id,
@@ -131,6 +136,11 @@ async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
             "threshold": ood_result.threshold,
         },
         "heatmap_url": heatmap_url,
+        # Phase 3: the raw heatmap image, now saved separately (see
+        # gradcam.py). Optional-in-practice from the frontend's
+        # perspective, but always present here since run_prediction()
+        # always requests it now - PNG path only.
+        "heatmap_only_url": heatmap_only_url,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
