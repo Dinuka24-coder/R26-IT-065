@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import Response
 
 from app.services.comp4_service import (
@@ -15,6 +15,7 @@ from app.ml_models.component4.dicom.series import get_series_store
 from app.ml_models.component4.dicom.windowing import resolve_window
 from app.ml_models.component4.dicom.renderer import render_slice_preview
 from app.ml_models.component4.dicom.volume import VolumeGeometryError
+from app.core.dependencies import require_doctor_or_admin
 from app.services.comp4_service import (
     get_dicom_volume,
     get_series_acquisitions,
@@ -29,7 +30,8 @@ router = APIRouter()
 @router.post("/predict")
 async def predict_lung_cancer_sub_type(
     patient_id: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    user = Depends(require_doctor_or_admin)
 ):
     """UNCHANGED endpoint contract. Internally now runs the lung CT
     suitability gate before classification (see comp4_service.py);
@@ -46,7 +48,8 @@ async def predict_lung_cancer_sub_type(
     try:
         result = await run_prediction(
             patient_id,
-            image_bytes
+            image_bytes,
+            user
         )
     except LungCtSuitabilityError as exc:
         raise HTTPException(
@@ -146,6 +149,7 @@ async def get_dicom_slice(
 @router.post("/dicom/analyze")
 async def analyze_dicom_slice(
     patient_id: str = Form(...),
+    user = Depends(require_doctor_or_admin),
     series_id: str = Form(...),
     slice_index: int = Form(...),
     window_center: Optional[float] = Form(None),
@@ -159,11 +163,13 @@ async def analyze_dicom_slice(
     try:
         result = await run_dicom_prediction(
             patient_id=patient_id,
+            current_user=user,
             series_id=series_id,
             slice_index=slice_index,
             window_center=window_center,
             window_width=window_width,
             preset=preset,
+
         )
     except DicomSeriesNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
