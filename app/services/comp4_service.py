@@ -53,7 +53,7 @@ class MultipleAcquisitionsError(ValueError):
         )
 
 
-async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
+async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict = None) -> dict:
     """Existing PNG/JPG prediction path.
 
     Now runs TWO suitability gates in sequence before classification:
@@ -106,6 +106,7 @@ async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
 
     final_result = {
         "patient_id": patient_id,
+        "doctor_id": str(current_user["_id"]) if current_user else None,
         "component": "CT-Based-Lung-cancer-Classification",
         "input_type": "PNG_JPG",
         "prediction": result["prediction"],
@@ -156,6 +157,7 @@ async def run_prediction(patient_id: str, image_bytes: bytes) -> dict:
 
 async def run_dicom_prediction(
     patient_id: str,
+    current_user: dict | None,
     series_id: str,
     slice_index: int,
     window_center: float | None,
@@ -222,6 +224,7 @@ async def run_dicom_prediction(
 
     final_result = {
         "patient_id": patient_id,
+        "doctor_id": str(current_user["_id"]) if current_user else None,
         "component": "CT-Based-Lung-cancer-Classification",
         "input_type": "DICOM",
         "prediction": result["prediction"],
