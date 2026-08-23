@@ -42,6 +42,8 @@ class DiagnosticController:
         self.classes = CLASSES
 
     def process_scan(self, image_bytes, patient_id):
+
+        print(f"DiagnosticController: Processing scan for patient_id: {patient_id}")
         """
         Executes the end-to-end clinical flow: Gatekeeper -> Preprocess ->
         Predict -> Conditional Grad-CAM. Returns a plain dict payload.
