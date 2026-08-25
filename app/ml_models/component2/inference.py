@@ -87,7 +87,7 @@ def run_pneumonia_inference(original_img):
     severity = calculate_pneumonia_severity(pneumonia_chance)
     
     heatmap_base64 = None
-    if pneumonia_chance >= 51:
+    if pneumonia_chance >= 47:
         diagnosis = "PNEUMONIA DETECTED"
         
         # --- Step 6: Grad-CAM Heatmap ---
