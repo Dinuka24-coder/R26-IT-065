@@ -17,7 +17,7 @@ XRAY_REFERENCE = {
 }
 
 # Distance threshold — tuned empirically
-DISTANCE_THRESHOLD = 0.35
+DISTANCE_THRESHOLD = 0.60
 
 # Chest X-rays are roughly square (0.7 – 1.4)
 MIN_ASPECT_RATIO = 0.70
