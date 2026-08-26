@@ -1,4 +1,5 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from app.core.dependencies import require_doctor_or_admin
 from app.services.comp3_service import process_tb_scan
 from app.models.component3_schema import TBPredictionResponse
  
@@ -7,7 +8,8 @@ router = APIRouter()
 @router.post("/predict", response_model=TBPredictionResponse)
 async def analyze_tb_scan(
     patient_id: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    user                   = Depends(require_doctor_or_admin),
 ):
     """
     Upload a Chest X-Ray image to predict the presence of Tuberculosis.
@@ -19,6 +21,6 @@ async def analyze_tb_scan(
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image.")
    
     # Pass to the service layer
-    result = await process_tb_scan(patient_id, file)
+    result = await process_tb_scan(patient_id, file, user)
     return result
  
