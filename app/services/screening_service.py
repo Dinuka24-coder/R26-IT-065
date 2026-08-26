@@ -2,13 +2,20 @@ import asyncio
 import time
 import cv2
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.ml_models.component1.xray_validator import is_xray
 from app.ml_models.component2.inference import run_pneumonia_inference, InvalidXRayError
+from app.ml_models.component3.controller import DiagnosticController
 from app.services.comp1_service import run_prediction as run_pneumothorax
 from app.services.comp2_service import save_pneumonia_prediction
+from app.repositories.result_repo import save_result
 from app.database import get_database
+
+
+class InvalidCXRError(ValueError):
+    """Raised when component 3's gatekeeper rejects an image."""
+    pass
 
 
 # ══════════════════════════════════════════════════════════════
@@ -74,6 +81,79 @@ async def run_pneumonia_adapted(patient_id: str, image_bytes: bytes, user: dict 
 
 
 # ══════════════════════════════════════════════════════════════
+#  TUBERCULOSIS ADAPTER
+#  Component 3's controller is synchronous, takes bytes, and uses
+#  "diagnosis" / "confidence_score" instead of the shared field
+#  names. Its own calibrated gatekeeper (distance + std + edge
+#  density + symmetry) stays ACTIVE and is surfaced as a rejection.
+# ══════════════════════════════════════════════════════════════
+
+_tb_controller = DiagnosticController()
+
+TB_DISPLAY = {
+    "Healthy":      "Normal",
+    "Non-TB":       "Other Abnormality",
+    "Tuberculosis": "Tuberculosis Detected",
+}
+
+
+def _tb_urgency(diagnosis: str, confidence: float) -> str:
+    if diagnosis != "Tuberculosis":
+        return "Low"
+    if confidence >= 85:
+        return "High"
+    if confidence >= 65:
+        return "Moderate"
+    return "Low"
+
+
+async def run_tuberculosis_adapted(patient_id: str, image_bytes: bytes, user: dict = None):
+    result = await asyncio.to_thread(_tb_controller.process_scan, image_bytes, patient_id)
+
+    if result.get("status") == "rejected":
+        raise InvalidCXRError(result.get("message", "Not a valid chest X-ray."))
+    if result.get("status") == "error":
+        raise RuntimeError(result.get("message", "TB pipeline error"))
+
+    diagnosis  = result["diagnosis"]                     # Healthy | Non-TB | Tuberculosis
+    confidence = float(result["confidence_score"])
+    urgency    = _tb_urgency(diagnosis, confidence)
+    prediction = TB_DISPLAY.get(diagnosis, diagnosis)
+
+    # Persist with doctor_id and created_at (the standalone service omits both)
+    try:
+        await save_result("tuberculosis_results", {
+            "status":           "success",
+            "is_xray":          True,
+            "patient_id":       patient_id,
+            "doctor_id":        str(user["_id"]) if user else None,
+            "component":        "tuberculosis",
+            "filename":         "full_screening",
+            "prediction":       prediction,
+            "diagnosis":        diagnosis,
+            "confidence":       confidence,
+            "confidence_score": confidence,
+            "severity":         urgency,
+            "bounding_box":     result.get("bounding_box"),
+            "clinical_note":    result.get("clinical_note"),
+            "created_at":       datetime.now(timezone.utc).isoformat(),
+            "timestamp":        datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        print(f"      ⚠️  TB record not saved: {type(e).__name__}")
+
+    return {
+        "prediction":     prediction,
+        "confidence":     round(confidence, 2),
+        "urgency":        urgency,
+        "heatmap_base64": result.get("heatmap_base64"),
+        "severity":       urgency,
+        "bounding_box":   result.get("bounding_box"),
+        "clinical_note":  result.get("clinical_note"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════
 #  ENGINE REGISTRY
 # ══════════════════════════════════════════════════════════════
 
@@ -90,17 +170,19 @@ XRAY_ENGINES = {
     },
     "tuberculosis": {
         "label":  "Tuberculosis",
-        "runner": None,          # TODO: connect when component 3 is ready
-        "ready":  False,
+        "runner": run_tuberculosis_adapted,
+        "ready":  True,
     },
 }
 
 DETAIL_KEYS = (
     "affected_lung_pct", "pleural_separation", "segmented_area_pct",   # component 1
     "severity", "affected_area_percent",                               # component 2
+    "clinical_note",                                                   # component 3
 )
 
 ENGINE_TIMEOUT = 60.0
+ENGINE_REJECTIONS = (InvalidXRayError, InvalidCXRError)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -155,7 +237,7 @@ async def _run_engine(key: str, cfg: dict, patient_id: str, image_bytes: bytes, 
             "duration_sec":   round(elapsed, 2),
         }
 
-    except InvalidXRayError as e:
+    except ENGINE_REJECTIONS as e:
         # The engine's own validator rejected the image.
         # Reported as a result, not a failure — the other engines still run.
         elapsed = time.time() - t

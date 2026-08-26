@@ -9,7 +9,8 @@ from app.repositories.result_repo import save_result
 _controller = DiagnosticController()
  
  
-async def process_tb_scan(patient_id: str, file: UploadFile) -> TBPredictionResponse:
+async def process_tb_scan(patient_id: str, file: UploadFile,
+                          current_user: dict = None) -> TBPredictionResponse:
 
     print(f"Processing TB scan for patient_id: {patient_id}, filename: {file.filename}")
 
@@ -25,6 +26,7 @@ async def process_tb_scan(patient_id: str, file: UploadFile) -> TBPredictionResp
  
         db_record = {
             "patient_id": patient_id,
+            "doctor_id": str(current_user["_id"]) if current_user else None,
             "component": "tuberculosis",
             "filename": file.filename,
             "diagnosis": result["diagnosis"],
