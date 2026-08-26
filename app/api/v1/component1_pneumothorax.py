@@ -9,7 +9,7 @@ router = APIRouter(prefix="/pneumothorax", tags=["Component 1 - Pneumothorax"])
 async def predict_pneumothorax(
     patient_id: str        = Form(...),
     file:       UploadFile = File(...),
-    user                   = Depends(require_doctor_or_admin),   # ← auth + doctor identity
+    user                   = Depends(require_doctor_or_admin),
 ):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
