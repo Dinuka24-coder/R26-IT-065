@@ -108,7 +108,7 @@ def _tb_urgency(diagnosis: str, confidence: float) -> str:
 
 
 async def run_tuberculosis_adapted(patient_id: str, image_bytes: bytes, user: dict = None):
-    result = await asyncio.to_thread(_tb_controller.process_scan, image_bytes, patient_id)
+    result = await _tb_controller.process_scan(image_bytes, patient_id)
 
     if result.get("status") == "rejected":
         raise InvalidCXRError(result.get("message", "Not a valid chest X-ray."))
