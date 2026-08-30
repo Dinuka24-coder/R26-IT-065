@@ -15,7 +15,7 @@ COMPONENT_COLLECTIONS = {
     "lung_cancer_results":   ("Lung Cancer",  "CT Scan"),
 }
 
-QUERY_TIMEOUT = 10.0
+QUERY_TIMEOUT = 20.0
 MAX_DOCS      = 500
 
 POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal")
