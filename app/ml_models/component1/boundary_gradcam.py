@@ -15,6 +15,14 @@ THRESHOLD = 0.35   # remove weak activations below this
 # so nothing is loaded into memory while this is False.
 USE_UNET_ENHANCEMENT = False
 
+# Set False to silence the per-stage terminal output
+VERBOSE = True
+
+
+def _log(msg):
+    if VERBOSE:
+        print(msg)
+
 
 def preprocess_for_gradcam(image_bytes: bytes) -> tuple:
     """Preprocess image and return model input + original RGB"""
@@ -36,6 +44,8 @@ def preprocess_for_gradcam(image_bytes: bytes) -> tuple:
 
 def generate_standard_gradcam_overlay(image_bytes: bytes):
     """Standard Grad-CAM WITHOUT lung masking or boundary — for comparison"""
+    _log("   📊 STANDARD Grad-CAM (comparison overlay)")
+
     model = get_model()
     img_batch, img_original, gray_img = preprocess_for_gradcam(image_bytes)
     efficientnet = model.layers[1]
@@ -84,8 +94,6 @@ def segment_lung_region(gray_img: np.ndarray) -> np.ndarray:
     h, w = gray_img.shape
 
     # ── Step 1: Central chest region mask ──────────────────────
-    # Lungs occupy roughly the central 70% horizontally
-    # and central 65% vertically of a chest X-ray
     central_mask = np.zeros((h, w), np.float32)
 
     x_start = int(w * 0.15)   # exclude 15% left edge (arm/shoulder)
@@ -100,9 +108,6 @@ def segment_lung_region(gray_img: np.ndarray) -> np.ndarray:
     img_eq = clahe.apply(gray_img)
     img_norm = img_eq.astype(np.float32) / 255.0
 
-    # Lung tissue is medium intensity — exclude:
-    #   very dark (< 0.08) = outside body / air pockets at edges
-    #   very bright (> 0.88) = bones, dense structures
     intensity_mask = np.ones((h, w), np.float32)
     intensity_mask[img_norm < 0.08] = 0.0   # too dark (background)
     intensity_mask[img_norm > 0.88] = 0.3   # too bright (bone) - reduce not remove
@@ -130,24 +135,18 @@ def get_pleural_segmentation(gray_full_img: np.ndarray) -> tuple:
     from app.ml_models.component1.unet_model import get_unet_model
     unet = get_unet_model()
 
-    # Preprocess for U-Net (256x256)
     img_256 = cv2.resize(gray_full_img, (256, 256))
     clahe   = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     img_256 = clahe.apply(img_256).astype(np.float32) / 255.0
     img_batch = img_256[np.newaxis, ..., np.newaxis]
 
-    # Predict segmentation mask
     pred_mask = unet.predict(img_batch, verbose=0)[0, :, :, 0]
     pred_mask = (pred_mask > 0.5).astype(np.uint8) * 255
-
-    # Resize to 224x224 (match display size)
     pred_mask = cv2.resize(pred_mask, (224, 224))
 
-    # Clean small noise
     kernel    = np.ones((3, 3), np.uint8)
     pred_mask = cv2.morphologyEx(pred_mask, cv2.MORPH_OPEN, kernel)
 
-    # Extract the pleural line (boundary of segmented region)
     contours, _ = cv2.findContours(
         pred_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -171,6 +170,8 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
     Note: Grad-CAM is ONLY generated when Pneumothorax is detected.
     Normal / Not-Pneumothorax cases skip all heatmap work.
     """
+    _log("\n🎯 BOUNDARY-AWARE GRAD-CAM")
+
     model = get_model()
     img_batch, img_original, gray_img = preprocess_for_gradcam(image_bytes)
 
@@ -182,6 +183,8 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
 
     # ── EARLY RETURN: skip Grad-CAM for normal cases ───────────
     if raw_score < 0.5:
+        _log(f"   → NEGATIVE (score {raw_score:.4f}, {confidence}% confidence)")
+        _log("   → pipeline skipped — no heatmap generated for normal cases")
         return {
             "prediction":          label,
             "confidence":          confidence,
@@ -192,6 +195,9 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
             "segmented_area_pct":  0.0,
             "heatmap_base64":      None,
         }
+
+    _log(f"   → POSITIVE (score {raw_score:.4f}, {confidence}% confidence)")
+    _log("   → running 4-stage boundary-aware pipeline")
 
     # ═══ ONLY RUNS IF PNEUMOTHORAX DETECTED ════════════════════
     efficientnet = model.layers[1]
@@ -225,17 +231,29 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
         heatmap = heatmap / heatmap.max()
 
     heatmap_resized = cv2.resize(heatmap, IMG_SIZE)
+    _log(f"   [1] Grad-CAM        {heatmap.shape[0]}x{heatmap.shape[1]} → 224x224, "
+         f"max activation {heatmap_resized.max():.3f}")
 
     # ── STEP 2: Lung Region Masking ────────────────────────────
     lung_mask = segment_lung_region(gray_img)
-    heatmap_masked = heatmap_resized * lung_mask
+    lung_px   = int(np.sum(lung_mask > 0.3))
+    before_px = int(np.sum(heatmap_resized > THRESHOLD))
 
+    heatmap_masked = heatmap_resized * lung_mask
     if heatmap_masked.max() > 0:
         heatmap_masked = heatmap_masked / heatmap_masked.max()
+
+    after_px = int(np.sum(heatmap_masked > THRESHOLD))
+    _log(f"   [2] Lung masking    {lung_px} px lung field · "
+         f"activation {before_px} → {after_px} px "
+         f"({100*(1-after_px/before_px):.0f}% removed)" if before_px else
+         f"   [2] Lung masking    {lung_px} px lung field")
 
     # ── STEP 3: Thresholding ───────────────────────────────────
     heatmap_thresh = heatmap_masked.copy()
     heatmap_thresh[heatmap_thresh < THRESHOLD] = 0
+    kept_px = int(np.sum(heatmap_thresh > THRESHOLD))
+    _log(f"   [3] Threshold {THRESHOLD}   {kept_px} px retained above threshold")
 
     # ── STEP 4: Boundary Extraction (Canny) ────────────────────
     heatmap_uint8 = np.uint8(255 * heatmap_thresh)
@@ -243,6 +261,8 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
 
     kernel        = np.ones((2, 2), np.uint8)
     edges_dilated = cv2.dilate(edges, kernel, iterations=1)
+    edge_px = int(np.sum(edges_dilated > 0))
+    _log(f"   [4] Canny boundary  {edge_px} edge px extracted (drawn cyan)")
 
     # ── STEP 5: Negative Space Detection ───────────────────────
     lung_binary     = (lung_mask > 0.3).astype(np.uint8) * 255
@@ -254,11 +274,11 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
     )
     kernel_ns      = np.ones((5, 5), np.uint8)
     negative_space = cv2.morphologyEx(negative_space, cv2.MORPH_OPEN, kernel_ns)
+    _log(f"   [5] Negative space  {int(np.sum(negative_space > 0))} px void detected")
 
     # ── STEP 6: Build the Clean Overlay ────────────────────────
     overlay = img_original.copy().astype(np.float32)
 
-    # Layer 1: Refined heatmap (only inside lung)
     heatmap_colored = cv2.applyColorMap(
         np.uint8(255 * heatmap_thresh), cv2.COLORMAP_JET
     )
@@ -277,14 +297,16 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
     overlay = np.clip(overlay, 0, 255).astype(np.uint8)
 
     # ── STEP 7: Metrics ────────────────────────────────────────
-    # int()/float() casts keep these as native Python types so they
-    # serialize cleanly to MongoDB and JSON.
     lung_area       = int(np.sum(lung_mask > 0.3))
     activation_area = int(np.sum(heatmap_thresh > THRESHOLD))
     boundary_pixels = int(np.sum(edges_dilated > 0))
 
     affected_pct = round((activation_area / lung_area) * 100, 2) if lung_area > 0 else 0.0
     boundary_length_pct = round((boundary_pixels / (IMG_SIZE[0] * IMG_SIZE[1])) * 100, 2)
+
+    _log(f"   [M] Metrics         affected {affected_pct}% · "
+         f"boundary {boundary_length_pct}% · "
+         f"separation {'PRESENT' if boundary_length_pct > 1.0 else 'ABSENT'}")
 
     # ── STEP 8: Convert to base64 ──────────────────────────────
     overlay_bgr    = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
@@ -298,25 +320,25 @@ def generate_boundary_aware_gradcam(image_bytes: bytes) -> dict:
         try:
             seg_mask, pleural_line = get_pleural_segmentation(gray_img)
 
-            # Draw U-Net pleural line in bright YELLOW
             overlay[pleural_line > 0] = [255, 255, 0]
 
-            # Re-encode overlay after drawing the U-Net line
             overlay_bgr    = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
             _, buffer      = cv2.imencode(".png", overlay_bgr)
             overlay_base64 = base64.b64encode(buffer).decode("utf-8")
 
             seg_area_pct = round((int(np.sum(seg_mask > 0)) / (224 * 224)) * 100, 2)
-            print("✅ U-Net USED — pleural line drawn")
+            _log("   [6] U-Net           pleural line drawn (yellow)")
 
         except Exception as e:
-            print(f"U-Net segmentation skipped: {e}")
+            _log(f"   [6] U-Net           skipped: {e}")
             seg_area_pct = 0.0
     else:
-        print("ℹ️  U-Net enhancement disabled (Dice 0.40 — pending improvement)")
+        _log("   [6] U-Net           disabled (Dice 0.40 — pending improvement)")
 
     # ── Generate Standard Grad-CAM for comparison ──────────────
     standard_heatmap = generate_standard_gradcam_overlay(image_bytes)
+
+    _log("   ✅ boundary-aware pipeline complete\n")
 
     return {
         "prediction":              label,

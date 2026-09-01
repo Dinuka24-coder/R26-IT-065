@@ -8,7 +8,12 @@ from datetime import datetime
 async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict = None):
     validation = is_xray(image_bytes)
     if not validation["is_xray"]:
-        return {"status": "rejected", "error": "Uploaded image does not appear to be a chest X-ray.", "is_xray": False}
+        return {
+            "status":  "rejected",
+            "error":   validation.get("reason")
+                       or "Uploaded image does not appear to be a chest X-ray.",
+            "is_xray": False,
+        }
 
     result  = generate_boundary_aware_gradcam(image_bytes)
     urgency = classify_urgency(result["confidence"], result["prediction"])
@@ -17,7 +22,7 @@ async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict
         "status":              "success",
         "is_xray":             True,
         "patient_id":          patient_id,
-        "doctor_id":           str(current_user["_id"]) if current_user else None,  # ← NEW
+        "doctor_id":           str(current_user["_id"]) if current_user else None,
         "component":           "pneumothorax",
         "prediction":          result["prediction"],
         "confidence":          result["confidence"],
@@ -30,9 +35,15 @@ async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict
         "created_at":          datetime.utcnow().isoformat(),
     }
 
+    # Save WITHOUT the heatmaps — base64 images are large and the
+    # dashboard/reports never read them back.
     saved_id = await save_result("pneumothorax_results", final_result.copy())
+
     final_result.pop("_id", None)
-    final_result["result_id"]     = str(saved_id)
-    final_result["heatmap_base64"] = result["heatmap_base64"]
+    final_result["result_id"] = str(saved_id)
+
+    # Attach both heatmaps to the API response only
+    final_result["heatmap_base64"]          = result["heatmap_base64"]
+    final_result["standard_heatmap_base64"] = result.get("standard_heatmap_base64")
 
     return final_result
