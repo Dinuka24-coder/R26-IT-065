@@ -2,10 +2,9 @@ import os
 import uuid
 import cv2
 import numpy as np
-import tensorflow as tf
 
 from app.ml_models.component4.model import get_model
-from app.ml_models.component4.inference import preprocess
+from app.ml_models.component4.gradcam_core import compute_raw_heatmap
 
 
 HEATMAP_DIR = "static/gradcam/component4"
@@ -17,6 +16,8 @@ def generate_gradcam(
     model=None,
     layer_name: str = "texture_conv_4",
     return_heatmap_only: bool = False,
+    filename_tag: str = "",
+    precomputed_heatmap=None,
 ):
     """Returns a str (the overlay URL) by default - EXACT existing
     behavior for every current caller (both PNG and DICOM), unchanged.
@@ -32,44 +33,28 @@ def generate_gradcam(
     (comp4_service.py's generate_gradcam(rendered_png_bytes,
     model=get_dicom_model())), which is NOT touched by this change -
     continues receiving exactly the same str return value as before.
+
+    filename_tag (NEW - this was previously called by comp4_service.py
+    but did not yet exist as a parameter here; adding it now fixes a
+    real TypeError that would have occurred on any /predict call):
+    optional, purely additive, default "" - when non-empty, inserted
+    into the saved filename (e.g. "densenet" ->
+    "{uuid}_densenet_gradcam.png"). Every call that omits it keeps the
+    original "{uuid}_gradcam.png" pattern exactly.
+
+    precomputed_heatmap: optional (raw_heatmap, predicted_index,
+    predictions) tuple - when provided, the GradientTape computation
+    (now in gradcam_core.compute_raw_heatmap()) is SKIPPED entirely and
+    this exact result is used for rendering. Every existing caller that
+    omits this argument computes fresh, exactly as before.
     """
-    # model=None preserves EXACT existing behavior for every current
-    # caller (PNG/JPG path) - only get_model() (the original PNG/JPG
-    # model) is used unless a caller explicitly passes a different
-    # model (the DICOM model, from comp4_service.py's DICOM-specific
-    # functions). Same texture_conv_4 target layer works for both,
-    # since both share the same architecture.
     if model is None:
         model = get_model()
 
-    img_array = preprocess(image_bytes)
-
-    grad_model = tf.keras.models.Model(
-        inputs=model.input,
-        outputs=[
-            model.get_layer(layer_name).output,
-            model.output
-        ]
-    )
-
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_array, training=False)
-        predicted_index = tf.argmax(predictions[0])
-        class_output = predictions[:, predicted_index]
-
-    grads = tape.gradient(class_output, conv_outputs)
-
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-
-    conv_outputs = conv_outputs[0]
-
-    heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
-
-    heatmap = tf.maximum(heatmap, 0)
-
-    heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
-
-    heatmap = heatmap.numpy()
+    if precomputed_heatmap is not None:
+        heatmap, predicted_index, predictions = precomputed_heatmap
+    else:
+        heatmap, predicted_index, predictions = compute_raw_heatmap(image_bytes, model, layer_name)
 
     heatmap = cv2.resize(heatmap, (224, 224))
 
@@ -87,7 +72,7 @@ def generate_gradcam(
 
     overlay = cv2.addWeighted(original, 0.6, heatmap_color, 0.4, 0)
 
-    filename = f"{uuid.uuid4()}_gradcam.png"
+    filename = f"{uuid.uuid4()}_{filename_tag + '_' if filename_tag else ''}gradcam.png"
     save_path = os.path.join(HEATMAP_DIR, filename)
 
     cv2.imwrite(save_path, overlay)

@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
 
 from app.ml_models.component4.inference import predict
+from app.ml_models.component4.model import get_model
 from app.ml_models.component4.dicom_inference import predict_dicom
 from app.ml_models.component4.gradcam import generate_gradcam
+from app.ml_models.component4.gradcam_core import compute_raw_heatmap
+from app.ml_models.component4.combined_gradcam import generate_combined_gradcam
 from app.ml_models.component4.dicom_model import get_dicom_model
 from app.ml_models.component4.lung_ct_validation import check_lung_ct_suitability
 from app.ml_models.component4.mobilenet_ood import check_mobilenet_ood
@@ -96,13 +99,39 @@ async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict
     # --- Stage: Cancer classification (unchanged) ---
     result = predict(image_bytes)
 
-    # --- Stage: Grad-CAM explanation (unchanged) ---
-    # Phase 3: opts into the new return_heatmap_only=True path - the
-    # DICOM call site below (run_dicom_prediction) is NOT touched and
-    # keeps calling generate_gradcam() with the default
-    # return_heatmap_only=False, receiving the exact same bare overlay
-    # URL string as before this change.
-    heatmap_url, heatmap_only_url = generate_gradcam(image_bytes, return_heatmap_only=True)
+    # --- Stage: Grad-CAM explanation ---
+    # Each distinct target layer is computed exactly ONCE via
+    # gradcam_core.compute_raw_heatmap(), then reused for every output
+    # that needs it - the legacy default-layer fields, the explicit
+    # "custom" fields, and the combined visualization all share the
+    # SAME texture_conv_4 result; the "densenet" fields and the
+    # combined visualization's DenseNet side share the SAME relu
+    # result. This is 2 real Grad-CAM computations, not 5.
+    model = get_model()
+    custom_raw, custom_idx, custom_predictions = compute_raw_heatmap(image_bytes, model, "texture_conv_4")
+    dense_raw, dense_idx, dense_predictions = compute_raw_heatmap(image_bytes, model, "relu")
+
+    # Legacy fields - same texture_conv_4 result reused, not recomputed.
+    heatmap_url, heatmap_only_url = generate_gradcam(
+        image_bytes, return_heatmap_only=True,
+        precomputed_heatmap=(custom_raw, custom_idx, custom_predictions),
+    )
+
+    densenet_gradcam_url, densenet_heatmap_only_url = generate_gradcam(
+        image_bytes, layer_name="relu", return_heatmap_only=True, filename_tag="densenet",
+        precomputed_heatmap=(dense_raw, dense_idx, dense_predictions),
+    )
+    custom_gradcam_url, custom_heatmap_only_url = generate_gradcam(
+        image_bytes, layer_name="texture_conv_4", return_heatmap_only=True, filename_tag="custom",
+        precomputed_heatmap=(custom_raw, custom_idx, custom_predictions),
+    )
+
+    # --- Combined dual-branch visualization ---
+    # Consumes the SAME dense_raw/custom_raw arrays computed above -
+    # generate_combined_gradcam() performs no computation of its own.
+    combined_gradcam_url, comparison_metrics, _ = generate_combined_gradcam(
+        image_bytes, dense_raw, dense_idx, custom_raw, custom_idx,
+    )
 
     final_result = {
         "patient_id": patient_id,
@@ -142,6 +171,12 @@ async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict
         # perspective, but always present here since run_prediction()
         # always requests it now - PNG path only.
         "heatmap_only_url": heatmap_only_url,
+        "densenet_gradcam_url": densenet_gradcam_url,
+        "densenet_heatmap_only_url": densenet_heatmap_only_url,
+        "custom_gradcam_url": custom_gradcam_url,
+        "custom_heatmap_only_url": custom_heatmap_only_url,
+        "combined_gradcam_url": combined_gradcam_url,
+        "comparison_metrics": comparison_metrics,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
