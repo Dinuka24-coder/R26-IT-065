@@ -1,3 +1,4 @@
+import base64
 import os
 import uuid
 import cv2
@@ -11,6 +12,15 @@ HEATMAP_DIR = "static/gradcam/component4"
 os.makedirs(HEATMAP_DIR, exist_ok=True)
 
 
+def encode_png_data_uri(image: np.ndarray) -> str:
+    """Encodes a BGR uint8 image as an in-memory PNG data URI
+    ("data:image/png;base64,..."). No file is created."""
+    ok, buffer = cv2.imencode(".png", image)
+    if not ok:
+        raise ValueError("Failed to encode Grad-CAM image as PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.tobytes()).decode("ascii")
+
+
 def generate_gradcam(
     image_bytes: bytes,
     model=None,
@@ -18,6 +28,7 @@ def generate_gradcam(
     return_heatmap_only: bool = False,
     filename_tag: str = "",
     precomputed_heatmap=None,
+    as_data_uri: bool = False,
 ):
     """Returns a str (the overlay URL) by default - EXACT existing
     behavior for every current caller (both PNG and DICOM), unchanged.
@@ -47,6 +58,14 @@ def generate_gradcam(
     (now in gradcam_core.compute_raw_heatmap()) is SKIPPED entirely and
     this exact result is used for rendering. Every existing caller that
     omits this argument computes fresh, exactly as before.
+
+    as_data_uri (NEW, opt-in, default False): when True, NOTHING is
+    written to disk. The overlay is returned as an in-memory PNG data
+    URI string instead of a "/static/..." URL; with return_heatmap_only
+    =True the raw heatmap is returned the same way, as the second tuple
+    element. The image content is byte-for-byte what would have been
+    saved (same cv2 PNG encoding). Every existing caller omits it, so
+    the DICOM path keeps writing files and receiving a URL, unchanged.
     """
     if model is None:
         model = get_model()
@@ -71,6 +90,12 @@ def generate_gradcam(
     original = cv2.resize(original, (224, 224))
 
     overlay = cv2.addWeighted(original, 0.6, heatmap_color, 0.4, 0)
+
+    if as_data_uri:
+        overlay_data_uri = encode_png_data_uri(overlay)
+        if not return_heatmap_only:
+            return overlay_data_uri
+        return overlay_data_uri, encode_png_data_uri(heatmap_color)
 
     filename = f"{uuid.uuid4()}_{filename_tag + '_' if filename_tag else ''}gradcam.png"
     save_path = os.path.join(HEATMAP_DIR, filename)
