@@ -4,9 +4,11 @@ import cv2
 import numpy as np
 from datetime import datetime, timezone
 
+from bson import ObjectId
+
 from app.ml_models.component1.xray_validator import is_xray
 from app.ml_models.component2.inference import run_pneumonia_inference, InvalidXRayError
-from app.ml_models.component3.controller import DiagnosticController
+from app.services.comp3_service import _controller as tb_controller
 from app.services.comp1_service import run_prediction as run_pneumothorax
 from app.services.comp2_service import save_pneumonia_prediction
 from app.repositories.result_repo import save_result
@@ -16,6 +18,21 @@ from app.database import get_database
 class InvalidCXRError(ValueError):
     """Raised when component 3's gatekeeper rejects an image."""
     pass
+
+
+# NEW ─ read the saved MongoDB id from whatever a save function returns
+def _saved_id(saved):
+    """Works with InsertOneResult, a dict, an ObjectId or a string id."""
+    if saved is None:
+        return None
+    if hasattr(saved, "inserted_id"):                 # Motor insert_one() result
+        return str(saved.inserted_id)
+    if isinstance(saved, dict):
+        v = saved.get("result_id") or saved.get("_id") or saved.get("id")
+        return str(v) if v else None
+    if isinstance(saved, (ObjectId, str)):
+        return str(saved)
+    return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -55,8 +72,9 @@ async def run_pneumonia_adapted(patient_id: str, image_bytes: bytes, user: dict 
     if prediction.upper() == "PNEUMONIA":
         prediction = "Pneumonia Detected"
 
+    result_id = None                                                  # NEW
     try:
-        await save_pneumonia_prediction(
+        saved = await save_pneumonia_prediction(                      # NEW (keep return value)
             patient_id=patient_id,
             filename="full_screening",
             diagnosis=diagnosis,
@@ -67,6 +85,7 @@ async def run_pneumonia_adapted(patient_id: str, image_bytes: bytes, user: dict 
             mean_intensity=(heatmap_sev or {}).get("mean_intensity"),
             doctor_id=str(user["_id"]) if user else None,
         )
+        result_id = _saved_id(saved)                                  # NEW
     except Exception as e:
         print(f"      ⚠️  pneumonia record not saved: {type(e).__name__}")
 
@@ -77,6 +96,7 @@ async def run_pneumonia_adapted(patient_id: str, image_bytes: bytes, user: dict 
         "heatmap_base64":        heatmap_b64,
         "severity":              severity,
         "affected_area_percent": (heatmap_sev or {}).get("affected_area_percent"),
+        "result_id":             result_id,                           # NEW
     }
 
 
@@ -88,7 +108,6 @@ async def run_pneumonia_adapted(patient_id: str, image_bytes: bytes, user: dict 
 #  density + symmetry) stays ACTIVE and is surfaced as a rejection.
 # ══════════════════════════════════════════════════════════════
 
-_tb_controller = DiagnosticController()
 
 TB_DISPLAY = {
     "Healthy":      "Normal",
@@ -108,7 +127,7 @@ def _tb_urgency(diagnosis: str, confidence: float) -> str:
 
 
 async def run_tuberculosis_adapted(patient_id: str, image_bytes: bytes, user: dict = None):
-    result = await _tb_controller.process_scan(image_bytes, patient_id)
+    result = await tb_controller.process_scan(image_bytes, patient_id)
 
     if result.get("status") == "rejected":
         raise InvalidCXRError(result.get("message", "Not a valid chest X-ray."))
@@ -121,8 +140,9 @@ async def run_tuberculosis_adapted(patient_id: str, image_bytes: bytes, user: di
     prediction = TB_DISPLAY.get(diagnosis, diagnosis)
 
     # Persist with doctor_id and created_at (the standalone service omits both)
+    result_id = None                                                  # NEW
     try:
-        await save_result("tuberculosis_results", {
+        saved = await save_result("tuberculosis_results", {           # NEW (keep return value)
             "status":           "success",
             "is_xray":          True,
             "patient_id":       patient_id,
@@ -139,6 +159,7 @@ async def run_tuberculosis_adapted(patient_id: str, image_bytes: bytes, user: di
             "created_at":       datetime.now(timezone.utc).isoformat(),
             "timestamp":        datetime.now(timezone.utc),
         })
+        result_id = _saved_id(saved)                                  # NEW
     except Exception as e:
         print(f"      ⚠️  TB record not saved: {type(e).__name__}")
 
@@ -150,6 +171,7 @@ async def run_tuberculosis_adapted(patient_id: str, image_bytes: bytes, user: di
         "severity":       urgency,
         "bounding_box":   result.get("bounding_box"),
         "clinical_note":  result.get("clinical_note"),
+        "result_id":      result_id,                                  # NEW
     }
 
 
@@ -213,10 +235,12 @@ async def _run_engine(key: str, cfg: dict, patient_id: str, image_bytes: bytes, 
         conf     = result.get("confidence", 0)
         urgency  = result.get("urgency", "Low")
         elapsed  = time.time() - t
+        result_id = _saved_id(result.get("result_id"))                # NEW
 
         icon = "🔴" if detected else "🟢"
         print(f"   {icon} {label:<14} {result.get('prediction')}")
         print(f"      confidence {conf}%  ·  urgency {urgency}  ·  {elapsed:.2f}s")
+        print(f"      saved result_id: {result_id or 'NOT SAVED'}")   # NEW
 
         details = {k: v for k, v in result.items() if k in DETAIL_KEYS and v is not None}
         if details:
@@ -235,6 +259,7 @@ async def _run_engine(key: str, cfg: dict, patient_id: str, image_bytes: bytes, 
             "heatmap_base64": result.get("heatmap_base64"),
             "details":        details,
             "duration_sec":   round(elapsed, 2),
+            "result_id":      result_id,                              # NEW (used for the PDF report)
         }
 
     except ENGINE_REJECTIONS as e:

@@ -1,6 +1,6 @@
 import asyncio
 from fastapi import APIRouter, Depends
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from app.core.dependencies import get_current_user
 from app.database import get_database
@@ -17,6 +17,16 @@ COMPONENT_COLLECTIONS = {
 
 QUERY_TIMEOUT = 20.0
 MAX_DOCS      = 500
+
+# Sri Lanka time (UTC+05:30) — used for "today" and the weekly chart
+LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))
+
+# Only these small fields are downloaded. Heatmaps / images are large and
+# made the query time out on MongoDB Atlas.
+RESULT_FIELDS = {
+    "patient_id": 1, "doctor_id": 1, "prediction": 1, "diagnosis": 1,
+    "status": 1, "confidence": 1, "created_at": 1, "timestamp": 1,
+}
 
 POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal")
 NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear")
@@ -36,35 +46,54 @@ def _is_positive(record) -> bool:
 
 def _get_created_at(r):
     if r.get("created_at"):
-        return r["created_at"]
+        v = r["created_at"]
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
     ts = r.get("timestamp")
     if hasattr(ts, "isoformat"):
         return ts.isoformat()
     return str(ts) if ts else None
 
+def _local_day(created_at) -> str:
+    """UTC time string -> Sri Lanka date 'YYYY-MM-DD' ('' if unknown)."""
+    if not created_at:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return str(created_at)[:10]
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(LOCAL_TZ).date().isoformat()
+
+def _today_local():
+    return datetime.now(LOCAL_TZ).date()
+
 # ── Shared helpers ─────────────────────────────────────────────
+async def _read_collection(db, coll):
+    """Newest MAX_DOCS results of one collection (small fields only)."""
+    try:
+        return await asyncio.wait_for(
+            db[coll].find({}, RESULT_FIELDS).sort("_id", -1).to_list(length=MAX_DOCS),
+            timeout=QUERY_TIMEOUT
+        )
+    except Exception as e:
+        print(f"⚠️ Skipping {coll}: {type(e).__name__}")
+        return []
+
+
 async def _gather_all_results(db):
-    """Collect prediction results from all component collections."""
+    """Collect prediction results from all component collections (in parallel)."""
+    colls = [c for c in COMPONENT_COLLECTIONS if collection_exists(c)]   # instant — no DB round trip
+    all_docs = await asyncio.gather(*(_read_collection(db, c) for c in colls))
+
     records = []
-
-    for coll, (disease, scan) in COMPONENT_COLLECTIONS.items():
-        if not collection_exists(coll):        # instant — no DB round trip
-            continue
-
-        try:
-            docs = await asyncio.wait_for(
-                db[coll].find().to_list(length=MAX_DOCS),
-                timeout=QUERY_TIMEOUT
-            )
-        except Exception as e:
-            print(f"⚠️ Skipping {coll}: {type(e).__name__}")
-            continue
-
+    for coll, docs in zip(colls, all_docs):
+        disease, scan = COMPONENT_COLLECTIONS[coll]
         for r in docs:
             positive = _is_positive(r)
             records.append({
-                "patient_id": r.get("patient_id"),
-                "doctor_id":  r.get("doctor_id"),
+                "patient_id": str(r.get("patient_id")) if r.get("patient_id") else None,
+                "doctor_id":  str(r.get("doctor_id")) if r.get("doctor_id") else None,
                 "disease":    disease if positive else "Normal",
                 "scan_type":  scan,
                 "confidence": r.get("confidence", 0),
@@ -76,11 +105,12 @@ async def _gather_all_results(db):
 
 
 def _build_weekly(results):
-    days = [(datetime.utcnow().date() - timedelta(days=i)) for i in range(6, -1, -1)]
+    today = _today_local()
+    days = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
     buckets = {d.isoformat(): {"xray": 0, "ct": 0} for d in days}
 
     for r in results:
-        day = str(r.get("created_at", ""))[:10]
+        day = _local_day(r.get("created_at"))
         if day in buckets:
             key = "ct" if r["scan_type"] == "CT Scan" else "xray"
             buckets[day][key] += 1
@@ -116,8 +146,8 @@ def _build_distribution(results):
 def _build_stats(results, total_patients, total_doctors, role):
     total_scans = len(results)
     positive    = sum(1 for r in results if r["status"] == "Positive")
-    today       = datetime.utcnow().date().isoformat()
-    today_count = sum(1 for r in results if str(r.get("created_at", "")).startswith(today))
+    today       = _today_local().isoformat()
+    today_count = sum(1 for r in results if _local_day(r.get("created_at")) == today)
 
     return {
         "total_patients":    total_patients,
@@ -141,6 +171,33 @@ async def _safe_count(db, coll, query=None):
         return 0
 
 
+async def _name_maps(db):
+    """patient id/code -> name, doctor id -> name (small fields only)."""
+    pmap, dmap = {}, {}
+    try:
+        patients = await asyncio.wait_for(
+            db["patients"].find({}, {"full_name": 1, "name": 1, "patient_id": 1}).to_list(length=2000),
+            timeout=QUERY_TIMEOUT
+        )
+        for p in patients:
+            name = p.get("full_name") or p.get("name") or "—"
+            pmap[str(p["_id"])] = name                  # results that store the MongoDB _id
+            if p.get("patient_id"):
+                pmap[str(p["patient_id"])] = name       # results that store the code (P001)
+    except Exception as e:
+        print(f"⚠️ Patient lookup failed: {type(e).__name__}")
+
+    try:
+        doctors = await asyncio.wait_for(
+            db["users"].find({"role": {"$in": ["doctor", "admin"]}}, {"full_name": 1}).to_list(length=200),
+            timeout=QUERY_TIMEOUT
+        )
+        dmap = {str(d["_id"]): d.get("full_name", "—") for d in doctors}
+    except Exception as e:
+        print(f"⚠️ Doctor lookup failed: {type(e).__name__}")
+    return pmap, dmap
+
+
 # ── COMBINED ENDPOINT (use this from the frontend) ─────────────
 @router.get("/overview")
 async def dashboard_overview(user=Depends(get_current_user)):
@@ -150,28 +207,13 @@ async def dashboard_overview(user=Depends(get_current_user)):
     """
     db = get_database()
 
-    total_patients = await _safe_count(db, "patients")
-    total_doctors  = await _safe_count(db, "users", {"role": "doctor"})
-    results        = await _gather_all_results(db)
-
-    # Name lookups for recent activity
-    pmap, dmap = {}, {}
-    try:
-        patients = await asyncio.wait_for(
-            db["patients"].find().to_list(length=MAX_DOCS), timeout=QUERY_TIMEOUT
-        )
-        pmap = {str(p["_id"]): p.get("full_name", "—") for p in patients}
-    except Exception as e:
-        print(f"⚠️ Patient lookup failed: {type(e).__name__}")
-
-    try:
-        doctors = await asyncio.wait_for(
-            db["users"].find({"role": {"$in": ["doctor", "admin"]}}).to_list(length=200),
-            timeout=QUERY_TIMEOUT
-        )
-        dmap = {str(d["_id"]): d.get("full_name", "—") for d in doctors}
-    except Exception as e:
-        print(f"⚠️ Doctor lookup failed: {type(e).__name__}")
+    # all independent → run at the same time
+    total_patients, total_doctors, results, (pmap, dmap) = await asyncio.gather(
+        _safe_count(db, "patients"),
+        _safe_count(db, "users", {"role": "doctor"}),
+        _gather_all_results(db),
+        _name_maps(db),
+    )
 
     recent = sorted(results, key=lambda x: x.get("created_at") or "", reverse=True)[:6]
     recent = [

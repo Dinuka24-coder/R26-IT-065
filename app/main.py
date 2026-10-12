@@ -1,6 +1,32 @@
+# ── Logging + hide noisy startup messages (must be before any other import) ──
 import os
+import logging
+import warnings
+
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"                     # hide TensorFlow C++ info/warnings
+
+# Set the app's log format FIRST, so the gatekeeper's basicConfig (which adds
+# "GATEKEEPER" to every message in the app) is ignored.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(message)s")
+
+
+class _HideStartupNoise(logging.Filter):
+    """Drop known harmless startup messages."""
+    HIDE = ("Loaded master CXR centroid",)
+
+    def filter(self, record):
+        return not record.getMessage().startswith(self.HIDE)
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_HideStartupNoise())
+
+logging.getLogger("tensorflow").setLevel(logging.ERROR)      # hide "GPU support is not available on native Windows"
+warnings.filterwarnings(
+    "ignore", message="Skipping variable loading for optimizer"   # hide the Keras 'adam' warning
+)
+# ──────────────────────────────────────────────────────────────────────────
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +36,6 @@ from app.database import connect_db, close_db, get_database
 from app.config import settings
 from app.api.v1.router import router
 from app.utils.collection_cache import refresh_collection_cache
-
 
 app = FastAPI(
     title="Pulmonary CDSS API",
