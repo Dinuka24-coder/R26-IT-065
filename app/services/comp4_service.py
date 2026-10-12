@@ -16,6 +16,19 @@ from app.ml_models.component4.dicom.renderer import render_slice_to_png_bytes
 from app.ml_models.component4.dicom.volume import build_volume, VolumeGeometryError
 from app.repositories.result_repo import save_result
 
+# PNG/JPG Grad-CAM images are returned to the client as in-memory PNG data
+# URIs and are deliberately NOT persisted (neither as files nor in MongoDB).
+# These keys are stripped from the document handed to save_result().
+_PNG_GRADCAM_IMAGE_FIELDS = (
+    "heatmap_url",
+    "heatmap_only_url",
+    "densenet_gradcam_url",
+    "densenet_heatmap_only_url",
+    "custom_gradcam_url",
+    "custom_heatmap_only_url",
+    "combined_gradcam_url",
+)
+
 
 class LungCtSuitabilityError(ValueError):
     """Raised when an input fails the Level 2 lung CT suitability check.
@@ -111,26 +124,32 @@ async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict
     custom_raw, custom_idx, custom_predictions = compute_raw_heatmap(image_bytes, model, "texture_conv_4")
     dense_raw, dense_idx, dense_predictions = compute_raw_heatmap(image_bytes, model, "relu")
 
-    # Legacy fields - same texture_conv_4 result reused, not recomputed.
-    heatmap_url, heatmap_only_url = generate_gradcam(
-        image_bytes, return_heatmap_only=True,
+    # All images are encoded in memory (as_data_uri=True) - no files are
+    # written. The custom-CNN overlay is generated ONCE; the legacy
+    # "heatmap_url" field is the same image (it was previously a second,
+    # identical file). The raw "heatmap only" images were written but never
+    # displayed by any consumer, so they are no longer generated.
+    custom_gradcam_url = generate_gradcam(
+        image_bytes, layer_name="texture_conv_4", filename_tag="custom",
         precomputed_heatmap=(custom_raw, custom_idx, custom_predictions),
+        as_data_uri=True,
     )
-
-    densenet_gradcam_url, densenet_heatmap_only_url = generate_gradcam(
-        image_bytes, layer_name="relu", return_heatmap_only=True, filename_tag="densenet",
+    densenet_gradcam_url = generate_gradcam(
+        image_bytes, layer_name="relu", filename_tag="densenet",
         precomputed_heatmap=(dense_raw, dense_idx, dense_predictions),
+        as_data_uri=True,
     )
-    custom_gradcam_url, custom_heatmap_only_url = generate_gradcam(
-        image_bytes, layer_name="texture_conv_4", return_heatmap_only=True, filename_tag="custom",
-        precomputed_heatmap=(custom_raw, custom_idx, custom_predictions),
-    )
+    heatmap_url = custom_gradcam_url
+    heatmap_only_url = None
+    densenet_heatmap_only_url = None
+    custom_heatmap_only_url = None
 
     # --- Combined dual-branch visualization ---
     # Consumes the SAME dense_raw/custom_raw arrays computed above -
     # generate_combined_gradcam() performs no computation of its own.
     combined_gradcam_url, comparison_metrics, _ = generate_combined_gradcam(
         image_bytes, dense_raw, dense_idx, custom_raw, custom_idx,
+        as_data_uri=True,
     )
 
     final_result = {
@@ -180,9 +199,15 @@ async def run_prediction(patient_id: str, image_bytes: bytes, current_user: dict
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
+    # Persist everything EXCEPT the Grad-CAM image data (history/report
+    # endpoints never read it; see reports.py::history_report).
+    db_record = {
+        k: v for k, v in final_result.items()
+        if k not in _PNG_GRADCAM_IMAGE_FIELDS
+    }
     saved_id = await save_result(
         "lung_cancer_results",
-        final_result
+        db_record
     )
 
     final_result["result_id"] = str(saved_id)

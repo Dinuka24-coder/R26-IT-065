@@ -7,6 +7,7 @@ of its own. Metrics are calculated directly from the raw float
 heatmap arrays, never from a saved/colormapped image.
 """
 
+import base64
 import os
 import uuid
 import numpy as np
@@ -57,6 +58,7 @@ def generate_combined_gradcam(
     custom_idx: int,
     show_contours: bool = True,
     filename_tag: str = "combined",
+    as_data_uri: bool = False,
 ):
     """REFACTORED signature: dense_raw/dense_idx/custom_raw/custom_idx
     are now REQUIRED parameters - the two already-computed heatmaps and
@@ -66,6 +68,11 @@ def generate_combined_gradcam(
 
     Same defensive same-class check as the original, same visual
     output, same metrics.
+
+    as_data_uri (NEW, opt-in, default False): when True, no file is
+    written and the first return value is an in-memory PNG data URI
+    instead of a "/static/..." URL. Image pixels and metrics are
+    identical either way.
     """
     if dense_idx != custom_idx:
         raise RuntimeError(
@@ -97,6 +104,13 @@ def generate_combined_gradcam(
 
     metrics = _compute_metrics(dense_224, custom_224)
     metrics["predicted_class_index"] = dense_idx
+
+    if as_data_uri:
+        ok, buffer = cv2.imencode(".png", combined)
+        if not ok:
+            raise ValueError("Failed to encode combined Grad-CAM image as PNG")
+        data_uri = "data:image/png;base64," + base64.b64encode(buffer.tobytes()).decode("ascii")
+        return data_uri, metrics, combined
 
     filename = f"{uuid.uuid4()}_{filename_tag}.png"
     save_path = os.path.join(OUTPUT_DIR, filename)
