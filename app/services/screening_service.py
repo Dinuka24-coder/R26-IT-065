@@ -425,3 +425,7 @@ async def run_full_screening(patient_id: str, image_bytes: bytes, user: dict = N
                 )
     except Exception as e:
         print(f"   ⚠️  screening record not saved: {type(e).__name__}")
+
+    screening.pop("_id", None)   # insert_one adds an ObjectId here; it can't be sent as JSON
+    print("═" * 64 + "\n")
+    return screening
