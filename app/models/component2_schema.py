@@ -36,7 +36,7 @@ class PneumoniaPredictionResponse(BaseModel):
     """
     API Response model for Component 2 Pneumonia prediction endpoint.
     """
-    database_record_id: Optional[str] = Field(None, description="The MongoDB document ID")
+    result_id: Optional[str] = Field(None, description="The MongoDB document ID (used for PDF report download)")
     patient_id: str = Field(..., description="The associated patient ID")
     filename: Optional[str] = Field(None, description="The original uploaded filename")
     diagnosis: str = Field(..., description="Diagnosis label")
