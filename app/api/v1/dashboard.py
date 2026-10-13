@@ -29,7 +29,7 @@ RESULT_FIELDS = {
 }
 
 POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal")
-NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear")
+NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear", "other abnormality", "healthy", "non-tb")
 
 def _is_positive(record) -> bool:
     text = str(record.get("prediction") or record.get("diagnosis") or "").lower().strip()
