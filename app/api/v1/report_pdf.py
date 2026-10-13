@@ -4,6 +4,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pymongo.errors import PyMongoError
+
 from app.core.dependencies import get_current_user
 from app.database import get_database
 from app.services import report_service as rs
@@ -23,11 +24,13 @@ def _pdf_response(pdf: bytes, filename: str, inline: bool) -> Response:
     )
 
 
-async def _filtered_rows(db, user, start_date, end_date, disease, status, patient_id, doctor_id, search):
+async def _filtered_rows(db, user, start_date, end_date, disease, status, patient_id, doctor_id, search,
+                         source=None):
     if start_date and end_date and start_date > end_date:
         raise HTTPException(400, "start_date must be before end_date")
     try:
-        rows = await rs.gather_results(db, user, start_date, end_date, disease, status, patient_id, doctor_id)
+        rows = await rs.gather_results(db, user, start_date, end_date, disease, status, patient_id, doctor_id,
+                                       source)
         await rs.attach_names(db, rows)
     except PyMongoError as e:
         print(f"[reports] database error: {type(e).__name__}: {e}")
@@ -44,11 +47,13 @@ async def list_results(
     patient_id: Optional[str] = None,
     doctor_id: Optional[str] = Query(None, description="Admin only"),
     search: Optional[str] = Query(None, description="Patient, doctor, disease or result text"),
+    source: Optional[Literal["all", "single", "full_screening"]] = "all",
     user=Depends(get_current_user),
 ):
     """Results for the Reports page (JSON). Doctors only get their own results."""
     db = get_database()
-    rows = await _filtered_rows(db, user, start_date, end_date, disease, status, patient_id, doctor_id, search)
+    rows = await _filtered_rows(db, user, start_date, end_date, disease, status, patient_id, doctor_id, search,
+                                source)
     for r in rows:
         r["created_at"] = r["created_at"].isoformat() if r["created_at"] else None
     return {"role": user.get("role"), "count": len(rows), "rows": rows}
@@ -63,12 +68,14 @@ async def summary_report(
     patient_id: Optional[str] = None,
     doctor_id: Optional[str] = Query(None, description="Admin only"),
     search: Optional[str] = None,
+    source: Optional[Literal["all", "single", "full_screening"]] = "all",
     inline: bool = Query(False, description="true = open in browser, false = download"),
     user=Depends(get_current_user),
 ):
     """Summary PDF. With doctor_id / disease / patient_id it becomes a doctor, disease or patient report."""
     db = get_database()
-    rows = await _filtered_rows(db, user, start_date, end_date, disease, status, patient_id, doctor_id, search)
+    rows = await _filtered_rows(db, user, start_date, end_date, disease, status, patient_id, doctor_id, search,
+                                source)
 
     doctor_label = None
     if doctor_id and user.get("role") == "admin":
@@ -94,7 +101,7 @@ async def summary_report(
     pdf = rs.build_summary_pdf(
         rows,
         {"title": title, "start_date": start_date, "end_date": end_date, "disease": disease, "status": status,
-         "patient": patient_label, "doctor": doctor_label, "search": search},
+         "patient": patient_label, "doctor": doctor_label, "search": search, "source": source},
         user.get("full_name") or user.get("email", ""),
     )
     return _pdf_response(pdf, f"PulmoAI_{slug}_{date.today().isoformat()}.pdf", inline)
@@ -120,7 +127,8 @@ async def result_report(
     doctor_name = await rs.get_user_name(db, str(result.get("doctor_id", "")))
     pdf = rs.build_result_pdf(result, component, patient, doctor_name,
                               user.get("full_name") or user.get("email", ""))
-    return _pdf_response(pdf, f"PulmoAI_{component}_{result.get('patient_id', 'patient')}_{result_id[-6:]}.pdf", inline)
+    code = (patient or {}).get("patient_id") or result.get("patient_id", "patient")
+    return _pdf_response(pdf, f"PulmoAI_{component}_{code}_{result_id[-6:]}.pdf", inline)
 
 
 @router.get("/screening")
