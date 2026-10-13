@@ -13,6 +13,7 @@ so the PDF part can be tested without a database.
 
 from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
+from xml.sax.saxutils import escape
 from typing import Optional
 
 from bson import ObjectId
@@ -43,13 +44,21 @@ MAX_ROWS = 1000
 
 # Fields read for the result list / summary report (keep this small = fast)
 LIST_FIELDS = {"patient_id": 1, "doctor_id": 1, "prediction": 1, "confidence": 1,
-               "urgency": 1, "severity": 1, "created_at": 1}
+               "urgency": 1, "severity": 1, "created_at": 1,
+               # older / standalone TB records use these names instead
+               "diagnosis": 1, "confidence_score": 1, "timestamp": 1,
+               # used to tell Full Screening results apart from single analyses
+               "filename": 1, "source": 1}
 
 # Times in reports are shown in Sri Lanka time (UTC+05:30, no daylight saving)
 LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # Fields hidden from the Details table when they are 0 / empty
-HIDE_WHEN_EMPTY = {"segmented_area_pct"}
+HIDE_WHEN_EMPTY = {"segmented_area_pct", "affected_lung_pct", "boundary_length_pct"}
+
+# Stored fields that are not useful in the PDF (internal or duplicates of fields already shown)
+HIDE_IN_PDF = {"explanation_image", "filename", "input_type", "diagnosis", "confidence_score",
+               "timestamp", "bounding_box", "raw_score"}
 SKIP_FIELDS = {"_id", "heatmap_base64", "heatmap", "image_base64", "original_base64", "standard_heatmap_base64","heatmap_url", "heatmap_only_url", "densenet_gradcam_url", "densenet_heatmap_only_url",
                "custom_gradcam_url", "custom_heatmap_only_url", "combined_gradcam_url"}
 FIELD_LABELS = {
@@ -57,6 +66,9 @@ FIELD_LABELS = {
     "boundary_length_pct": "Boundary Extent (%)",
     "pleural_separation": "Pleural Separation",
     "raw_score": "Raw model score",
+    "affected_area_percent": "Affected Area (%)",
+    "mean_intensity": "Mean Attention Intensity",
+    "clinical_note": "Clinical Note",
     "urgency": "Urgency",
     "severity": "Severity",
     "class_probabilities": "Class probabilities",
@@ -109,13 +121,48 @@ def _patient_query(pid: str) -> dict:
         ors.append({"_id": ObjectId(pid)})
     return {"$or": ors}
 
-CANCER_MARKERS = ("carcinoma", "nodule")
+NEGATIVE_WORDS = ("normal", "no ", "not ", "negative", "clear", "other abnormality", "healthy", "non-tb")
+POSITIVE_WORDS = ("detected", "positive", "malignant", "carcinoma", "nodule", "tuberculosis")
+
 
 def is_positive(prediction) -> bool:
-    p = str(prediction or "").lower()
-    if any(m in p for m in CANCER_MARKERS):
-        return True
-    return "detected" in p and not (p.startswith("no") or "not " in p)
+    """Works for every component's wording, e.g. 'Pneumonia Detected', 'No Pneumothorax',
+    'Other Abnormality' (TB: not TB), 'adenocarcinoma' / 'normal' (lung cancer classes)."""
+    p = str(prediction or "").lower().strip()
+    if not p or any(w in p for w in NEGATIVE_WORDS):
+        return False
+    return any(w in p for w in POSITIVE_WORDS)
+
+
+def pretty_prediction(prediction) -> str:
+    """'large.cell.carcinoma' -> 'Large Cell Carcinoma'; other text unchanged."""
+    p = str(prediction or "-").strip()
+    if p.islower() or "." in p or "_" in p:
+        return p.replace(".", " ").replace("_", " ").title()
+    return p
+
+
+def fmt_conf(value) -> str:
+    """99.97 -> '99.97%', 80.3 -> '80.3%' (never rounds 99.97 up to 100)."""
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{value:.2f}".rstrip("0").rstrip(".") + "%"
+
+
+# TB model labels -> display text (same as screening_service.TB_DISPLAY)
+TB_DISPLAY = {"Healthy": "Normal", "Non-TB": "Other Abnormality", "Tuberculosis": "Tuberculosis Detected"}
+
+
+def normalize_result(r: dict) -> dict:
+    """Fill the shared field names when a record only has the old TB names
+    (diagnosis / confidence_score / timestamp). Returns the same dict."""
+    if not r.get("prediction") and r.get("diagnosis"):
+        r["prediction"] = TB_DISPLAY.get(r["diagnosis"], r["diagnosis"])
+    if r.get("confidence") is None and r.get("confidence_score") is not None:
+        r["confidence"] = r["confidence_score"]
+    if not r.get("created_at") and r.get("timestamp"):
+        r["created_at"] = r["timestamp"]
+    return r
 
 
 def user_id(user: dict) -> str:
@@ -130,8 +177,8 @@ def fmt_value(value) -> str:
     if isinstance(value, (list, tuple)):
         return ", ".join(fmt_value(v) for v in value[:8])
     if isinstance(value, dict):
-        return ", ".join(f"{k}: {fmt_value(v)}" for k, v in list(value.items())[:8])
-    return str(value)
+        return ", ".join(f"{escape(str(k))}: {fmt_value(v)}" for k, v in list(value.items())[:8])
+    return escape(str(value))
 
 def _fmt_class_probabilities(d: dict) -> str:
     """{'adenocarcinoma': 0.61, ...} -> 'Adenocarcinoma: 61%, ...' (highest first)."""
@@ -186,9 +233,12 @@ async def gather_results(
     status: Optional[str] = None,
     patient_id: Optional[str] = None,
     doctor_id: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> list:
-    """Collect results from all component collections, apply filters, newest first."""
+    """Collect results from all component collections, apply filters, newest first.
+    source: 'all' | 'single' (single analysis pages) | 'full_screening'"""
     existing = set(await db.list_collection_names())
+    screening_of = await screening_map(db) if "screening_results" in existing else {}
 
     query = {}
     if patient_id:
@@ -220,10 +270,19 @@ async def gather_results(
         # Only fetch the small fields the list needs. Heatmaps / images are big and
         # made the query time out on MongoDB Atlas.
         async for r in db[coll].find(query, LIST_FIELDS).sort("_id", -1).limit(MAX_ROWS):
+            normalize_result(r)
             created = to_datetime(r.get("created_at"))
             if start and (created is None or created < start):
                 continue
             if end and (created is None or created > end):
+                continue
+            rid = str(r.get("_id"))
+            screening_id = screening_of.get(rid) or r.get("screening_id")
+            from_screening = bool(screening_id) or r.get("source") == "full_screening" \
+                or r.get("filename") == "full_screening"
+            if source == "single" and from_screening:
+                continue
+            if source == "full_screening" and not from_screening:
                 continue
             positive = is_positive(r.get("prediction"))
             if status and status.lower() != "all":
@@ -236,15 +295,28 @@ async def gather_results(
                 "scan_type": scan,
                 "patient_id": str(r.get("patient_id", "-")),
                 "doctor_id": str(r.get("doctor_id", "")),
-                "prediction": r.get("prediction", "-"),
+                "prediction": pretty_prediction(r.get("prediction")),
                 "confidence": r.get("confidence"),
                 "urgency": r.get("urgency") or r.get("severity"),
                 "positive": positive,
                 "created_at": created,
+                "source": "full_screening" if from_screening else "single",
+                "screening_id": str(screening_id) if screening_id else None,
             })
 
     rows.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return rows[:MAX_ROWS]
+
+
+async def screening_map(db) -> dict:
+    """result_id -> screening_id, read from the Full Screening records."""
+    out = {}
+    cursor = db["screening_results"].find({}, {"summary.result_id": 1}).sort("_id", -1).limit(MAX_ROWS)
+    async for s in cursor:
+        for e in s.get("summary") or []:
+            if e.get("result_id"):
+                out[str(e["result_id"])] = str(s["_id"])
+    return out
 
 
 async def attach_names(db, rows: list) -> list:
@@ -288,7 +360,8 @@ async def get_result(db, component: str, result_id: str) -> Optional[dict]:
     coll = COMPONENT_TO_COLLECTION.get(component)
     if not coll or not ObjectId.is_valid(result_id):
         return None
-    return await db[coll].find_one({"_id": ObjectId(result_id)})
+    r = await db[coll].find_one({"_id": ObjectId(result_id)})
+    return normalize_result(r) if r else None
 
 
 async def get_patient(db, patient_id: str) -> Optional[dict]:
@@ -397,6 +470,8 @@ def build_summary_pdf(rows: list, filters: dict, generated_by: str) -> bytes:
         flt.append(("Doctor", filters["doctor"]))
     if filters.get("search"):
         flt.append(("Search", filters["search"]))
+    if filters.get("source") in ("single", "full_screening"):
+        flt.append(("Source", "Single analysis" if filters["source"] == "single" else "Full screening"))
     story.append(_kv_table(flt, st))
 
     # counts per disease
@@ -442,7 +517,7 @@ def build_summary_pdf(rows: list, filters: dict, generated_by: str) -> bytes:
             code, pname = r.get("patient_code") or r["patient_id"], r.get("patient_name", "")
             patient = f"{code}<br/><font color='#566874' size='7.5'>{pname}</font>" if pname else code
             colour = "#B42318" if r["positive"] else "#15803D"
-            conf = f"{r['confidence']:.1f}%" if isinstance(r["confidence"], (int, float)) else "-"
+            conf = fmt_conf(r["confidence"])
             data.append([
                 Paragraph(fmt_dt(r["created_at"]), st["cell"]),
                 Paragraph(patient, st["cell"]),
@@ -493,10 +568,10 @@ def _result_box(result: dict, st) -> Table:
     positive = is_positive(result.get("prediction"))
     colour = POS if positive else NEG
     conf = result.get("confidence")
-    conf_txt = f"{conf:.1f}% confidence" if isinstance(conf, (int, float)) else ""
+    conf_txt = f"{fmt_conf(conf)} confidence" if isinstance(conf, (int, float)) else ""
     urgency = result.get("urgency") or result.get("severity")
     box = Table([
-        [Paragraph(f"<font color='{colour.hexval()}'>{result.get('prediction', '-')}</font>", st["big"])],
+        [Paragraph(f"<font color='{colour.hexval()}'>{pretty_prediction(result.get('prediction'))}</font>", st["big"])],
         [Paragraph(" - ".join(x for x in (conf_txt, f"Urgency: {urgency}" if urgency and positive else "") if x),
                    st["body"])],
     ], colWidths=[180 * mm])
@@ -516,8 +591,8 @@ def _details_table(result: dict, scan: str, doctor_name: str, st) -> Table:
     positive = is_positive(result.get("prediction"))
     details = [("Scan type", scan), ("Analysed at", fmt_dt(result.get("created_at"))),
                ("Requested by", doctor_name or "-")]
-    hidden = SKIP_FIELDS | {"patient_id", "doctor_id", "prediction", "confidence", "created_at",
-                            "component", "status", "is_xray", "result_id"}
+    hidden = SKIP_FIELDS | HIDE_IN_PDF | {"patient_id", "doctor_id", "prediction", "confidence", "created_at",
+                                          "component", "status", "is_xray", "result_id"}
     if not positive:
         hidden |= {"urgency", "severity"}
     for k, v in result.items():
@@ -588,8 +663,8 @@ def build_screening_pdf(items: list, patient: Optional[dict], doctor_name: str, 
         conf = r.get("confidence")
         data.append([
             Paragraph(disease, st["cell"]),
-            Paragraph(f"<font color='{colour}'><b>{r.get('prediction', '-')}</b></font>", st["cell"]),
-            Paragraph(f"{conf:.1f}%" if isinstance(conf, (int, float)) else "-", st["cell"]),
+            Paragraph(f"<font color='{colour}'><b>{pretty_prediction(r.get('prediction'))}</b></font>", st["cell"]),
+            Paragraph(fmt_conf(conf), st["cell"]),
             Paragraph(str((r.get("urgency") or r.get("severity") or "-") if positive else "-"), st["cell"]),
         ])
     t = Table(data, colWidths=[45 * mm, 70 * mm, 30 * mm, 35 * mm])

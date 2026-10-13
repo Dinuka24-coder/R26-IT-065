@@ -26,10 +26,12 @@ LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))
 RESULT_FIELDS = {
     "patient_id": 1, "doctor_id": 1, "prediction": 1, "diagnosis": 1,
     "status": 1, "confidence": 1, "created_at": 1, "timestamp": 1,
+    "filename": 1, "source": 1,
 }
+SCREENING_FIELDS = {"summary.result_id": 1, "created_at": 1}
 
-POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal")
-NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear")
+POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal", "tuberculosis")
+NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear", "other abnormality", "healthy", "non-tb")
 
 def _is_positive(record) -> bool:
     text = str(record.get("prediction") or record.get("diagnosis") or "").lower().strip()
@@ -81,10 +83,40 @@ async def _read_collection(db, coll):
         return []
 
 
+async def _read_screenings(db):
+    """Newest Full Screening records (only the linked result IDs and the date)."""
+    if not collection_exists("screening_results"):
+        return []
+    try:
+        return await asyncio.wait_for(
+            db["screening_results"].find({}, SCREENING_FIELDS).sort("_id", -1).to_list(length=MAX_DOCS),
+            timeout=QUERY_TIMEOUT
+        )
+    except Exception as e:
+        print(f"⚠️ Skipping screening_results: {type(e).__name__}")
+        return []
+
+
+def _from_screening(r, screening_result_ids) -> bool:
+    """True when this engine result was created by a Full Screening (not a single analysis)."""
+    return (r.get("source") == "full_screening"
+            or r.get("filename") == "full_screening"
+            or str(r.get("_id")) in screening_result_ids)
+
+
 async def _gather_all_results(db):
-    """Collect prediction results from all component collections (in parallel)."""
+    """
+    Collect prediction results from all component collections (in parallel).
+    Returns (records, screenings). Each record has `from_screening`, so one Full
+    Screening (one X-ray, 3 engine results) can be counted as ONE scan.
+    """
     colls = [c for c in COMPONENT_COLLECTIONS if collection_exists(c)]   # instant — no DB round trip
-    all_docs = await asyncio.gather(*(_read_collection(db, c) for c in colls))
+    *all_docs, screenings = await asyncio.gather(
+        *(_read_collection(db, c) for c in colls), _read_screenings(db)
+    )
+    screening_result_ids = {
+        str(e.get("result_id")) for s in screenings for e in (s.get("summary") or []) if e.get("result_id")
+    }
 
     records = []
     for coll, docs in zip(colls, all_docs):
@@ -92,6 +124,7 @@ async def _gather_all_results(db):
         for r in docs:
             positive = _is_positive(r)
             records.append({
+                "from_screening": _from_screening(r, screening_result_ids),
                 "patient_id": str(r.get("patient_id")) if r.get("patient_id") else None,
                 "doctor_id":  str(r.get("doctor_id")) if r.get("doctor_id") else None,
                 "disease":    disease if positive else "Normal",
@@ -101,10 +134,20 @@ async def _gather_all_results(db):
                 "created_at": _get_created_at(r),
             })
 
-    return records
+    return records, screenings
 
 
-def _build_weekly(results):
+def _scan_events(results, screenings):
+    """One entry per uploaded image: single analyses + one per Full Screening (X-ray)."""
+    events = [{"scan_type": r["scan_type"], "created_at": r.get("created_at")}
+              for r in results if not r.get("from_screening")]
+    events += [{"scan_type": "X-ray", "created_at": _get_created_at(s)} for s in screenings]
+    return events
+
+
+def _build_weekly(results, screenings=()):
+    """Scans (uploaded images) per day. A Full Screening counts as one X-ray."""
+    results = _scan_events(results, screenings)
     today = _today_local()
     days = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
     buckets = {d.isoformat(): {"xray": 0, "ct": 0} for d in days}
@@ -143,21 +186,29 @@ def _build_distribution(results):
     ]
 
 
-def _build_stats(results, total_patients, total_doctors, role):
-    total_scans = len(results)
-    positive    = sum(1 for r in results if r["status"] == "Positive")
-    today       = _today_local().isoformat()
-    today_count = sum(1 for r in results if _local_day(r.get("created_at")) == today)
+def _build_stats(results, total_patients, total_doctors, role, screenings=()):
+    """
+    total_scans       = images uploaded (a Full Screening = 1 scan)
+    total_predictions = model results (a Full Screening = 1 result per engine)
+    """
+    scans          = _scan_events(results, screenings)
+    total_analyses = len(results)
+    positive       = sum(1 for r in results if r["status"] == "Positive")
+    today          = _today_local().isoformat()
 
     return {
-        "total_patients":    total_patients,
-        "total_scans":       total_scans,
-        "positive_cases":    positive,
-        "positive_percent":  round(positive / total_scans * 100, 1) if total_scans else 0,
-        "total_doctors":     total_doctors,
-        "total_predictions": total_scans,
-        "today_predictions": today_count,
-        "role":              role,
+        "total_patients":     total_patients,
+        "total_scans":        len(scans),
+        "total_predictions":  total_analyses,
+        "total_analyses":     total_analyses,
+        "total_screenings":   len(screenings),
+        "single_analyses":    sum(1 for r in results if not r.get("from_screening")),
+        "positive_cases":     positive,
+        "positive_percent":   round(positive / total_analyses * 100, 1) if total_analyses else 0,
+        "total_doctors":      total_doctors,
+        "today_scans":        sum(1 for e in scans if _local_day(e.get("created_at")) == today),
+        "today_predictions":  sum(1 for r in results if _local_day(r.get("created_at")) == today),
+        "role":               role,
     }
 
 
@@ -208,7 +259,7 @@ async def dashboard_overview(user=Depends(get_current_user)):
     db = get_database()
 
     # all independent → run at the same time
-    total_patients, total_doctors, results, (pmap, dmap) = await asyncio.gather(
+    total_patients, total_doctors, (results, screenings), (pmap, dmap) = await asyncio.gather(
         _safe_count(db, "patients"),
         _safe_count(db, "users", {"role": "doctor"}),
         _gather_all_results(db),
@@ -227,8 +278,8 @@ async def dashboard_overview(user=Depends(get_current_user)):
     ]
 
     return {
-        "stats":        _build_stats(results, total_patients, total_doctors, user["role"]),
-        "weekly":       _build_weekly(results),
+        "stats":        _build_stats(results, total_patients, total_doctors, user["role"], screenings),
+        "weekly":       _build_weekly(results, screenings),
         "distribution": _build_distribution(results),
         "recent":       recent,
     }
@@ -240,19 +291,19 @@ async def dashboard_stats(user=Depends(get_current_user)):
     db = get_database()
     total_patients = await _safe_count(db, "patients")
     total_doctors  = await _safe_count(db, "users", {"role": "doctor"})
-    results        = await _gather_all_results(db)
-    return _build_stats(results, total_patients, total_doctors, user["role"])
+    results, screenings = await _gather_all_results(db)
+    return _build_stats(results, total_patients, total_doctors, user["role"], screenings)
 
 
 @router.get("/weekly-volume")
 async def weekly_volume(user=Depends(get_current_user)):
     db = get_database()
-    results = await _gather_all_results(db)
-    return _build_weekly(results)
+    results, screenings = await _gather_all_results(db)
+    return _build_weekly(results, screenings)
 
 
 @router.get("/disease-distribution")
 async def disease_distribution(user=Depends(get_current_user)):
     db = get_database()
-    results = await _gather_all_results(db)
+    results, _ = await _gather_all_results(db)
     return _build_distribution(results)

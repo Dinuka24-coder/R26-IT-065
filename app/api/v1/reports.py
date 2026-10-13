@@ -26,7 +26,7 @@ PATIENT_FIELDS = {"full_name": 1, "name": 1, "patient_id": 1}
 USER_FIELDS    = {"full_name": 1}
 
 POSITIVE_MARKERS = ("detected", "positive", "malignant", "abnormal")
-NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear")
+NEGATIVE_MARKERS = ("normal", "no ", "negative", "clear", "other abnormality", "healthy", "non-tb")
 CANCER_MARKERS   = ("carcinoma", "adenocarcinoma", "nodule")
 
 

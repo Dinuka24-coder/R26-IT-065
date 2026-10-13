@@ -411,10 +411,17 @@ async def run_full_screening(patient_id: str, image_bytes: bytes, user: dict = N
         record["summary"] = [
             {k: v for k, v in r.items() if k != "heatmap_base64"} for r in results
         ]
-        await db["screening_results"].insert_one(record)
+        inserted = await db["screening_results"].insert_one(record)
+        screening["screening_id"] = str(inserted.inserted_id)
         print(f"   saved to screening_results ✅")
+
+        # Mark each engine's own record as part of this screening
+        for r in results:
+            if r.get("result_id") and ObjectId.is_valid(r["result_id"]):
+                await db[f'{r["component"]}_results'].update_one(
+                    {"_id": ObjectId(r["result_id"])},
+                    {"$set": {"source": "full_screening",
+                              "screening_id": screening["screening_id"]}},
+                )
     except Exception as e:
         print(f"   ⚠️  screening record not saved: {type(e).__name__}")
-
-    print("═" * 64 + "\n")
-    return screening
