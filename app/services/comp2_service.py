@@ -9,7 +9,7 @@ async def save_pneumonia_prediction(
     diagnosis: str,
     confidence: float,
     severity: str,
-    heatmap_base64: Optional[str] = None,
+    heatmap_base64: Optional[str] = None,  # API/screening overlay only — not stored
     affected_area_percent: Optional[float] = None,
     mean_intensity: Optional[float] = None,
     doctor_id: Optional[str] = None,
@@ -17,6 +17,9 @@ async def save_pneumonia_prediction(
     """
     Packages and formats the AI result matching the unified CDSS schema,
     then persists it to the pneumonia_results MongoDB collection.
+
+    Grad-CAM images (~260 KB) are returned on the live predict response only.
+    They are not written here so dashboard/report queries stay small.
     """
     # 1. Standardize diagnosis format (e.g. "Pneumonia Detected", "Normal")
     clean_diagnosis = diagnosis.title()
@@ -44,7 +47,6 @@ async def save_pneumonia_prediction(
         "severity": severity,
         "affected_area_percent": affected_area_percent,
         "mean_intensity": mean_intensity,
-        "explanation_image": heatmap_base64,
         "timestamp": datetime.now(timezone.utc),
         "created_at": datetime.utcnow().isoformat(),
     }

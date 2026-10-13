@@ -6,8 +6,9 @@ from pydantic import BaseModel, Field
 class PneumoniaMongoResult(BaseModel):
     """
     MongoDB document model for Component 2 (Pneumonia Detection & Severity).
-    Matches the unified CDSS schema format while preserving diagnosis, confidence, 
-    severity, explanation_image, and timestamp.
+    Matches the unified CDSS schema format while preserving diagnosis, confidence,
+    severity, and timestamp. Grad-CAM images are returned by the API only and
+    are not stored on this document.
     """
     status: str = Field("success", description="Status of the analysis")
     is_xray: bool = Field(True, description="Whether the uploaded image is a valid chest X-ray")
@@ -21,7 +22,6 @@ class PneumoniaMongoResult(BaseModel):
     severity: str = Field(..., description="Calculated severity (e.g. Mild, Moderate, Severe, Normal)")
     affected_area_percent: Optional[float] = Field(None, description="Quantified affected lung area percentage from Grad-CAM")
     mean_intensity: Optional[float] = Field(None, description="Mean intensity of activation in affected areas")
-    explanation_image: Optional[str] = Field(None, description="Base64 encoded Grad-CAM heatmap visualization")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Timezone-aware UTC timestamp")
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat(), description="ISO formatted creation timestamp string")
 
@@ -44,4 +44,4 @@ class PneumoniaPredictionResponse(BaseModel):
     severity: str = Field(..., description="Severity classification")
     affected_area_percent: Optional[float] = Field(None, description="Grad-CAM affected lung area percentage")
     mean_intensity: Optional[float] = Field(None, description="Grad-CAM mean activation intensity")
-    explanation_image: Optional[str] = Field(None, description="Base64 Grad-CAM heatmap image")
+    explanation_image: Optional[str] = Field(None, description="Base64 Grad-CAM heatmap for the live response only; not persisted")
