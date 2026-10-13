@@ -46,7 +46,9 @@ MAX_ROWS = 1000
 LIST_FIELDS = {"patient_id": 1, "doctor_id": 1, "prediction": 1, "confidence": 1,
                "urgency": 1, "severity": 1, "created_at": 1,
                # older / standalone TB records use these names instead
-               "diagnosis": 1, "confidence_score": 1, "timestamp": 1}
+               "diagnosis": 1, "confidence_score": 1, "timestamp": 1,
+               # used to tell Full Screening results apart from single analyses
+               "filename": 1, "source": 1}
 
 # Times in reports are shown in Sri Lanka time (UTC+05:30, no daylight saving)
 LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))
@@ -231,9 +233,12 @@ async def gather_results(
     status: Optional[str] = None,
     patient_id: Optional[str] = None,
     doctor_id: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> list:
-    """Collect results from all component collections, apply filters, newest first."""
+    """Collect results from all component collections, apply filters, newest first.
+    source: 'all' | 'single' (single analysis pages) | 'full_screening'"""
     existing = set(await db.list_collection_names())
+    screening_of = await screening_map(db) if "screening_results" in existing else {}
 
     query = {}
     if patient_id:
@@ -271,6 +276,14 @@ async def gather_results(
                 continue
             if end and (created is None or created > end):
                 continue
+            rid = str(r.get("_id"))
+            screening_id = screening_of.get(rid) or r.get("screening_id")
+            from_screening = bool(screening_id) or r.get("source") == "full_screening" \
+                or r.get("filename") == "full_screening"
+            if source == "single" and from_screening:
+                continue
+            if source == "full_screening" and not from_screening:
+                continue
             positive = is_positive(r.get("prediction"))
             if status and status.lower() != "all":
                 if (status.lower() == "positive") != positive:
@@ -287,10 +300,23 @@ async def gather_results(
                 "urgency": r.get("urgency") or r.get("severity"),
                 "positive": positive,
                 "created_at": created,
+                "source": "full_screening" if from_screening else "single",
+                "screening_id": str(screening_id) if screening_id else None,
             })
 
     rows.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return rows[:MAX_ROWS]
+
+
+async def screening_map(db) -> dict:
+    """result_id -> screening_id, read from the Full Screening records."""
+    out = {}
+    cursor = db["screening_results"].find({}, {"summary.result_id": 1}).sort("_id", -1).limit(MAX_ROWS)
+    async for s in cursor:
+        for e in s.get("summary") or []:
+            if e.get("result_id"):
+                out[str(e["result_id"])] = str(s["_id"])
+    return out
 
 
 async def attach_names(db, rows: list) -> list:
@@ -444,6 +470,8 @@ def build_summary_pdf(rows: list, filters: dict, generated_by: str) -> bytes:
         flt.append(("Doctor", filters["doctor"]))
     if filters.get("search"):
         flt.append(("Search", filters["search"]))
+    if filters.get("source") in ("single", "full_screening"):
+        flt.append(("Source", "Single analysis" if filters["source"] == "single" else "Full screening"))
     story.append(_kv_table(flt, st))
 
     # counts per disease
