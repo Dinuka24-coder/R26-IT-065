@@ -48,7 +48,7 @@ async def predict_pneumonia(
 
         # 4. Return the result to the screen (including quantitative attention metrics)
         return {
-            "database_record_id": db_record_id,
+            "result_id": db_record_id,
             "patient_id": patient_id,
             "filename": file.filename,
             "diagnosis": diagnosis,
