@@ -50,7 +50,8 @@ LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # Fields hidden from the Details table when they are 0 / empty
 HIDE_WHEN_EMPTY = {"segmented_area_pct"}
-SKIP_FIELDS = {"_id", "heatmap_base64", "heatmap", "image_base64", "original_base64", "standard_heatmap_base64"}
+SKIP_FIELDS = {"_id", "heatmap_base64", "heatmap", "image_base64", "original_base64", "standard_heatmap_base64","heatmap_url", "heatmap_only_url", "densenet_gradcam_url", "densenet_heatmap_only_url",
+               "custom_gradcam_url", "custom_heatmap_only_url", "combined_gradcam_url"}
 FIELD_LABELS = {
     "affected_lung_pct": "Attention Coverage (%)",
     "boundary_length_pct": "Boundary Extent (%)",
@@ -58,6 +59,9 @@ FIELD_LABELS = {
     "raw_score": "Raw model score",
     "urgency": "Urgency",
     "severity": "Severity",
+    "class_probabilities": "Class probabilities",
+    "input_check": "Input check",
+    "comparison_metrics": "Grad-CAM branch agreement",
 }
 
 # colours
@@ -105,9 +109,12 @@ def _patient_query(pid: str) -> dict:
         ors.append({"_id": ObjectId(pid)})
     return {"$or": ors}
 
+CANCER_MARKERS = ("carcinoma", "nodule")
 
 def is_positive(prediction) -> bool:
     p = str(prediction or "").lower()
+    if any(m in p for m in CANCER_MARKERS):
+        return True
     return "detected" in p and not (p.startswith("no") or "not " in p)
 
 
@@ -125,6 +132,48 @@ def fmt_value(value) -> str:
     if isinstance(value, dict):
         return ", ".join(f"{k}: {fmt_value(v)}" for k, v in list(value.items())[:8])
     return str(value)
+
+def _fmt_class_probabilities(d: dict) -> str:
+    """{'adenocarcinoma': 0.61, ...} -> 'Adenocarcinoma: 61%, ...' (highest first)."""
+    items = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
+    return ", ".join(f"{str(k).replace('.', ' ').title()}: {float(v) * 100:.0f}%" for k, v in items)
+
+
+def _fmt_input_check(d: dict) -> str:
+    """Suitability check stored by Component 4."""
+    ok = "Passed" if d["within_distribution"] else "Failed"
+    extra = ""
+    if d.get("distance") is not None and d.get("threshold") is not None:
+        extra = f" (distance {float(d['distance']):.2f}, threshold {float(d['threshold']):.2f})"
+    return ok + extra
+
+
+def _fmt_comparison_metrics(d: dict) -> str:
+    """Plain-language version of the DenseNet121 / Custom CNN agreement values."""
+    text = (f"Overlap between branches (IoU): {d['iou_at_0.5']:.2f}, "
+            f"DenseNet121 highlighted area: {d['dense_area_above_0.5'] * 100:.0f}%, "
+            f"Custom CNN highlighted area: {d['custom_area_above_0.5'] * 100:.0f}%, "
+            f"Centre distance: {d['center_of_mass_distance_px']:.1f} px")
+    return (text + "<br/><font size='7' color='#566874'>Technical Grad-CAM agreement values. "
+            "They do not indicate clinical accuracy or prove tumour localization.</font>")
+
+
+# value formatters for dict fields stored by Component 4 (fall back to fmt_value if the shape differs)
+SPECIAL_FORMATTERS = {
+    "class_probabilities": _fmt_class_probabilities,
+    "input_check": _fmt_input_check,
+    "comparison_metrics": _fmt_comparison_metrics,
+}
+
+
+def fmt_field(key: str, value) -> str:
+    fmt = SPECIAL_FORMATTERS.get(key)
+    if fmt and isinstance(value, dict):
+        try:
+            return fmt(value)
+        except (KeyError, TypeError, ValueError):
+            pass
+    return fmt_value(value)
 
 
 # ── data access (MongoDB / Motor) ────────────────────────────────
@@ -476,7 +525,7 @@ def _details_table(result: dict, scan: str, doctor_name: str, st) -> Table:
             continue
         if k in HIDE_WHEN_EMPTY and not v:
             continue
-        details.append((FIELD_LABELS.get(k, k.replace("_", " ").capitalize()), fmt_value(v)))
+        details.append((FIELD_LABELS.get(k, k.replace("_", " ").capitalize()), fmt_field(k, v)))
     return _kv_table(details, st)
 
 
