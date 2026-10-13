@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 class TBPredictionResponse(BaseModel):
     database_record_id: Optional[str] = Field(None, description="The MongoDB document ID.")
     patient_id: Optional[str] = Field(None, description="The associated patient ID.")
+    result_id: Optional[str] = None
     filename: Optional[str] = Field(None, description="The original uploaded filename.")
     status: str = Field(..., description="'success' if the scan was processed, 'rejected' if the gatekeeper turned the upload away (not a chest X-ray, or quality too low).")
     diagnosis: Optional[str] = Field(None, description="Healthy, Non-TB, or Tuberculosis. None when status is 'rejected'.")
