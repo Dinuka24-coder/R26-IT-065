@@ -1,7 +1,9 @@
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TF_CPP_MIN_LOG_LEVEL=3 \
+    CUDA_VISIBLE_DEVICES=-1
 
 # system libraries needed by OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
