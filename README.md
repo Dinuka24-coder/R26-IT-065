@@ -1,5 +1,7 @@
-# Multi - Modal Pulmonary Diseases Detection System
+# PulmoAI — Multi-Modal Pulmonary Disease Detection System
 ### Backend API — Python FastAPI + MongoDB
+
+> SLIIT Research Project **R26-IT-065** — Unified Clinical Decision Support System (CDSS) for Pulmonary Diseases
 
 ---
 
@@ -7,35 +9,62 @@
 
 1. [Project Overview](#project-overview)
 2. [The 4 Components](#the-4-components)
-3. [Tech Stack](#tech-stack)
-4. [Folder Structure](#folder-structure)
-5. [Folder Explanation](#folder-explanation)
-6. [How a Request Flows (Component 1 Example)](#how-a-request-flows)
+3. [Main Features](#main-features)
+4. [Tech Stack](#tech-stack)
+5. [Folder Structure](#folder-structure)
+6. [How a Request Flows](#how-a-request-flows)
 7. [Getting Started](#getting-started)
-8. [API Endpoints](#api-endpoints)
-9. [Environment Variables](#environment-variables)
-10. [Docker Setup](#docker-setup)
+8. [Environment Variables](#environment-variables)
+9. [API Endpoints](#api-endpoints)
+10. [Shared Result Format](#shared-result-format)
+11. [PDF Reports](#pdf-reports)
+12. [MongoDB Collections](#mongodb-collections)
+13. [Troubleshooting](#troubleshooting)
+14. [Project Team](#project-team)
 
 ---
 
 ## Project Overview
 
-Diagnosing pulmonary diseases today is a fragmented process. A patient goes through multiple hand-offs between GPs, radiographers, radiologists, and pulmonologists — each running isolated tests in separate systems.
+Diagnosing pulmonary diseases is often fragmented: a patient moves between GPs,
+radiographers, radiologists and pulmonologists, and each test lives in a separate system.
 
-This project builds a **Single Playground**: a unified, web-based Clinical Decision Support System (CDSS) where a single attending doctor can evaluate a patient's full pulmonary profile from one dashboard — no waiting on departmental hand-offs.
+PulmoAI is a **single web-based Clinical Decision Support System** where a doctor can
+check a patient for several lung diseases from one dashboard, see an explainable AI
+result (heatmaps), and download a PDF report.
 
-The backend is a **FastAPI** application exposing REST endpoints for four AI-powered diagnostic components, backed by **MongoDB** for flexible medical data storage.
+The backend is a **FastAPI** application that exposes REST endpoints for four AI
+components, a Full Screening pipeline, dashboards, history and PDF reports,
+with **MongoDB** for storage.
+
+> AI results are decision support only and must be reviewed and confirmed by a qualified clinician.
 
 ---
 
 ## The 4 Components
 
-| # | Component | Input | AI Model | Output |
-|---|-----------|-------|----------|--------|
-| 1 | **Pneumothorax Detection** | Chest X-ray | MobileNet / EfficientNet + Grad-CAM | Prediction, confidence score, heatmap overlay, urgency level (High / Moderate / Low) |
-| 2 | **Pneumonia Diagnosis & Severity** | Chest X-ray | MobileNetV2 + Weakly Supervised Localization | Disease label, severity percentage, lung damage boundary overlay, Grad-Cam Heatmap with thresholding techniques to depict the affected region |
-| 3 | **Tuberculosis Detection** | Chest X-ray | GhostNet + MobileViT + Two-stage XAI | TB lesion segmentation (cavities, nodules, consolidations), pixel-level mask, lung impact score |
-| 4 | **3D Lung Cancer Detection** | CT Scan (DICOM) | 3D Volumetric CNN | Nodule / tumor localization in 3D, detects lesions hidden behind ribs or heart tissue |
+| # | Component | Input | Output |
+|---|-----------|-------|--------|
+| 1 | **Pneumothorax Detection** | Chest X-ray | Prediction, confidence, Boundary-Aware Grad-CAM heatmap, attention indicators, urgency (High / Moderate / Low) |
+| 2 | **Pneumonia Diagnosis & Severity** | Chest X-ray | Prediction, confidence, severity, affected area %, Grad-CAM explanation |
+| 3 | **Tuberculosis Detection** | Chest X-ray | Healthy / Other Abnormality / Tuberculosis, confidence, clinical note, heatmap. Includes a gatekeeper that rejects non-chest-X-ray images |
+| 4 | **Lung Cancer Classification** | CT scan image | Adenocarcinoma / Large Cell / Squamous Cell Carcinoma / Normal, class probabilities, input check, Grad-CAM (two branches) |
+
+**Full Screening** runs one chest X-ray through components 1–3 in parallel and
+returns one combined result.
+
+---
+
+## Main Features
+
+- **4 AI components** with explainable heatmaps
+- **Full Screening** – one X-ray, all X-ray engines in parallel, one combined verdict
+- **Input validation** – a central chest X-ray validator plus each engine's own check
+- **PDF reports** – single result, Full Screening, summary, and Doctor / Disease / Patient reports
+- **Reports list** with search and filters (date, disease, result, source, doctor, patient)
+- **Dashboard** – scans, analyses, positive cases, weekly chart, disease distribution, recent activity
+- **Role-based access** – Admin sees everything, Doctors see only their own results
+- **Sri Lanka time (UTC+05:30)** in all reports and dashboard counts
 
 ---
 
@@ -44,232 +73,98 @@ The backend is a **FastAPI** application exposing REST endpoints for four AI-pow
 | Layer | Technology |
 |-------|-----------|
 | API Framework | Python FastAPI |
-| Database | MongoDB (via Motor async driver) |
-| File Storage | MongoDB GridFS (for X-rays, CT scans, heatmaps) |
-| ML Framework | TensorFlow / PyTorch |
-| Containerization | Docker + Docker Compose |
-| Image Processing | OpenCV, Pillow |
-| DICOM Handling | PyDICOM (Component 4) |
+| Database | MongoDB Atlas (Motor async driver) |
+| ML Framework | TensorFlow / Keras |
+| Image Processing | OpenCV, Pillow, NumPy |
+| PDF Reports | ReportLab |
+| Auth | JWT |
 
-**Why MongoDB over MySQL?**
-Medical imaging results from each component have different structures (heatmaps, bounding boxes, severity scores, 3D nodule coordinates). MongoDB's flexible document model handles this naturally, and GridFS provides built-in large file storage for scans alongside their metadata — no painful schema migrations needed.
+**Why MongoDB?** Each component stores a different result shape (heatmaps, bounding
+boxes, class probabilities, severity scores). MongoDB's flexible documents handle this
+without schema migrations.
 
 ---
 
 ## Folder Structure
 
 ```
-pulmonary-cdss-backend/
-│
+R26-IT-065/
 ├── app/
-│   ├── main.py                          # FastAPI app entry point
-│   ├── config.py                        # Settings & environment variables
-│   ├── database.py                      # MongoDB connection
+│   ├── main.py                     # App entry point, CORS, log setup, router
+│   ├── config.py                   # Settings from .env
+│   ├── database.py                 # MongoDB connection
 │   │
-│   ├── api/                             # HTTP route handlers (front door)
-│   │   └── v1/
-│   │       ├── router.py
-│   │       ├── patients.py
-│   │       ├── component1_pneumothorax.py
-│   │       ├── component2_pneumonia.py
-│   │       ├── component3_tuberculosis.py
-│   │       └── component4_lung_cancer.py
+│   ├── api/v1/                     # HTTP routes (no AI logic here)
+│   │   ├── router.py               # Registers all routers
+│   │   ├── component2_pneumonia.py
+│   │   ├── component3_tuberculosis.py
+│   │   ├── screening.py            # Full Screening
+│   │   ├── dashboard.py            # Dashboard stats and charts
+│   │   ├── reports.py              # Prediction history
+│   │   ├── report_pdf.py           # Reports list + PDF downloads
+│   │   └── ...                     # auth, users, patients, other components
 │   │
-│   ├── models/                          # Pydantic request/response schemas
-│   │   ├── patient.py
-│   │   ├── scan.py
-│   │   ├── component1_schema.py
-│   │   ├── component2_schema.py
-│   │   ├── component3_schema.py
-│   │   └── component4_schema.py
+│   ├── services/                   # Business logic for each feature
+│   │   ├── comp1_service.py        # Pneumothorax
+│   │   ├── comp2_service.py        # Pneumonia
+│   │   ├── comp3_service.py        # Tuberculosis
+│   │   ├── screening_service.py    # Full Screening pipeline
+│   │   └── report_service.py       # Report data + PDF building
 │   │
-│   ├── services/                        # Business logic coordinator
-│   │   ├── patient_service.py
-│   │   ├── component1_service.py
-│   │   ├── component2_service.py
-│   │   ├── component3_service.py
-│   │   └── component4_service.py
+│   ├── ml_models/                  # AI code and model weights, one folder per component
+│   │   ├── component1/             # Pneumothorax (model, Grad-CAM, urgency, X-ray validator)
+│   │   ├── component2/             # Pneumonia
+│   │   ├── component3/             # Tuberculosis (controller, gatekeeper cascade)
+│   │   └── component4/             # Lung cancer
 │   │
-│   ├── ml/                              # All AI / deep learning code
-│   │   ├── component1/                  # Pneumothorax
-│   │   │   ├── model.py
-│   │   │   ├── inference.py
-│   │   │   ├── gradcam.py
-│   │   │   ├── urgency.py
-│   │   │   └── weights/
-│   │   │       └── pneumothorax_model.h5
-│   │   ├── component2/                  # Pneumonia
-│   │   │   ├── model.py
-│   │   │   ├── inference.py
-│   │   │   ├── gradcam.py
-│   │   │   ├── severity.py
-│   │   │   └── weights/
-│   │   │       └── pneumonia_model.h5
-│   │   ├── component3/                  # Tuberculosis
-│   │   │   ├── model.py
-│   │   │   ├── inference.py
-│   │   │   ├── segmentation.py
-│   │   │   ├── xai.py
-│   │   │   └── weights/
-│   │   │       └── tb_model.h5
-│   │   └── component4/                  # Lung Cancer (CT)
-│   │       ├── model.py
-│   │       ├── inference.py
-│   │       ├── nodule_detector.py
-│   │       ├── ct_preprocessor.py
-│   │       └── weights/
-│   │           └── lung_cancer_3d.pt
-│   │
-│   ├── repositories/                    # MongoDB data access layer
-│   │   ├── patient_repo.py
-│   │   ├── scan_repo.py
-│   │   └── result_repo.py
-│   │
-│   ├── utils/                           # Shared helper tools
-│   │   ├── image_utils.py
-│   │   ├── dicom_utils.py
-│   │   ├── file_storage.py
-│   │   ├── heatmap_utils.py
-│   │   └── response_utils.py
-│   │
-│   └── middleware/
-│       ├── auth.py
-│       └── logging.py
+│   ├── models/                     # Pydantic request/response schemas
+│   ├── repositories/               # MongoDB read/write helpers (e.g. result_repo.py)
+│   ├── core/                       # Auth dependencies (current user, roles)
+│   └── utils/                      # Shared helpers (collection cache, image checks)
 │
-├── tests/
-│   ├── test_component1.py
-│   ├── test_component2.py
-│   ├── test_component3.py
-│   ├── test_component4.py
-│   └── conftest.py
-│
-├── static/outputs/                      # Temporary heatmap/overlay images
-├── .env
-├── .env.example
 ├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
+├── .env.example
 └── README.md
 ```
 
----
-
-## Folder Explanation
-
-### `app/main.py` — Entry Point
-The starting file of the entire application. It creates the FastAPI app, registers all the routers, and connects to MongoDB on startup.
-
----
-
-### `app/api/` — Front Door (Route Handlers)
-Each file here maps to one component's HTTP endpoints. This layer only receives requests and sends responses — it does **no AI work** itself.
-
-```
-POST /api/v1/pneumothorax/predict     → component1_pneumothorax.py
-POST /api/v1/pneumonia/predict        → component2_pneumonia.py
-POST /api/v1/tuberculosis/predict     → component3_tuberculosis.py
-POST /api/v1/lung-cancer/predict      → component4_lung_cancer.py
-```
-
----
-
-### `app/models/` — Data Shapes
-Pydantic schema files that define exactly what the input and output of each API call looks like. Think of these as the official form templates — they validate data automatically.
-
-```python
-# Example: component1_schema.py
-class PneumothoraxResult(BaseModel):
-    prediction: str        # "Pneumothorax Detected"
-    confidence: float      # 0.94
-    urgency_level: str     # "High"
-    heatmap_url: str       # URL to the overlay image
-```
-
----
-
-### `app/services/` — The Coordinator
-Each service file orchestrates the full process for one component. It is the only file that talks to both the ML layer and the database layer.
-
-```
-Receives image from API
-    → Preprocesses it (via utils/)
-    → Sends to ML model for prediction
-    → Saves result to MongoDB (via repositories/)
-    → Returns final response to API
-```
-
----
-
-### `app/ml/` — The AI Brain
-All deep learning code lives here, organized per component. Each component folder has the same internal structure:
-
-| File | Job |
-|------|-----|
-| `model.py` | Loads the trained model weights from disk once at startup |
-| `inference.py` | Runs the image through the model, returns prediction + confidence |
-| `gradcam.py` | Generates the Grad-CAM heatmap showing *where* disease is detected |
-| `urgency.py` *(C1)* | Classifies urgency as High / Moderate / Low |
-| `severity.py` *(C2)* | Calculates the percentage of lung compromised |
-| `segmentation.py` *(C3)* | Produces pixel-level TB lesion masks |
-| `nodule_detector.py` *(C4)* | Localizes 3D nodules/tumors in CT volume |
-| `ct_preprocessor.py` *(C4)* | Converts DICOM files to normalized 3D arrays |
-| `weights/` | Stores the trained `.h5` / `.pt` model files |
-
----
-
-### `app/repositories/` — The Filing Cabinet
-MongoDB query code lives here. These files only know how to read and write data. They have no knowledge of AI, HTTP, or business logic.
-
-```python
-# result_repo.py
-async def save(result):
-    await db["results"].insert_one(result.dict())
-
-async def get_by_patient_id(patient_id):
-    return await db["results"].find({"patient_id": patient_id})
-```
-
----
-
-### `app/utils/` — Shared Tools
-Helper functions used across all 4 components:
-
-| File | Purpose |
-|------|---------|
-| `image_utils.py` | Resize X-rays, normalize pixel values for model input |
-| `heatmap_utils.py` | Alpha-blend Grad-CAM overlay onto the original X-ray |
-| `file_storage.py` | Upload/download scan images and heatmaps via MongoDB GridFS |
-| `dicom_utils.py` | Parse DICOM CT files into numpy arrays (Component 4 only) |
-| `response_utils.py` | Wrap all API responses in a consistent JSON envelope |
+**One file, one job:** routes only handle HTTP, services coordinate the work,
+`ml_models/` only does AI, and `repositories/` only talks to MongoDB.
+Each team member works inside their own component folder.
 
 ---
 
 ## How a Request Flows
 
-Using **Component 1 — Pneumothorax Detection** as an example:
+**Single analysis (Component 1 example)**
 
 ```
-Doctor uploads chest X-ray via frontend
-             ↓
-[api/component1_pneumothorax.py]     Receives the HTTP POST request
-             ↓
-[services/component1_service.py]     Coordinates the full pipeline
-             ↓
-[utils/image_utils.py]               Resizes to 224×224, normalizes pixels
-             ↓
-[ml/component1/inference.py]         MobileNet predicts: "Pneumothorax Detected" (94%)
-             ↓
-[ml/component1/gradcam.py]           Generates heatmap highlighting affected region
-             ↓
-[ml/component1/urgency.py]           Assigns urgency: "HIGH"
-             ↓
-[utils/heatmap_utils.py]             Overlays heatmap on original X-ray image
-             ↓
-[utils/file_storage.py]              Saves overlay image to MongoDB GridFS
-             ↓
-[repositories/result_repo.py]        Saves result document to MongoDB
-             ↓
-Doctor receives:  prediction + confidence + heatmap image + urgency level
+Doctor uploads a chest X-ray
+        ↓
+api/v1 (pneumothorax route)        receives the request
+        ↓
+services/comp1_service.py          coordinates the pipeline
+        ↓
+ml_models/component1               validate X-ray → predict → Grad-CAM → urgency
+        ↓
+MongoDB pneumothorax_results       result saved (with doctor_id, created_at)
+        ↓
+Response: prediction, confidence, heatmap, urgency, result_id
+```
+
+**Full Screening**
+
+```
+POST /screening/full
+        ↓
+Central chest X-ray validator      rejects non-chest-X-ray images
+        ↓
+Pneumothorax ┐
+Pneumonia    ├─ run in parallel, each with its own check, each saves its own result
+Tuberculosis ┘
+        ↓
+screening_results                  one summary record (verdict, overall urgency, result_ids)
+        ↓
+Each engine result is tagged with source="full_screening" and screening_id
 ```
 
 ---
@@ -277,184 +172,211 @@ Doctor receives:  prediction + confidence + heatmap image + urgency level
 ## Getting Started
 
 ### Prerequisites
-- Python 3.10+
-- MongoDB 7+
-- Docker & Docker Compose (recommended)
-- NVIDIA GPU (recommended for Component 4 CT inference)
+- Python 3.10+ (developed on Python 3.13, Windows)
+- A MongoDB database (MongoDB Atlas or local)
+- Trained model weights in each `app/ml_models/componentX/weights/` folder
 
-### Local Setup
+### Local setup (Windows / PowerShell)
 
-```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/pulmonary-cdss-backend.git
-cd pulmonary-cdss-backend
+```powershell
+# 1. Clone and enter the project
+git clone <repo-url>
+cd R26-IT-065
 
-# 2. Create virtual environment
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+# 2. Create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Copy environment file and fill in values
-cp .env.example .env
+# 4. Create your .env file and fill in the values
+copy .env.example .env
 
-# 5. Place trained model weights in their folders
-#    app/ml/component1/weights/pneumothorax_model.h5
-#    app/ml/component2/weights/pneumonia_model.h5
-#    app/ml/component3/weights/tb_model.h5
-#    app/ml/component4/weights/lung_cancer_3d.pt
-
-# 6. Run the server
+# 5. Run the server
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Run with Docker (Recommended)
+On macOS / Linux use `source .venv/bin/activate` and `cp .env.example .env`.
 
-```bash
-docker-compose up --build
+The server is ready when you see:
+
+```
+✅ Connected to MongoDB: pulmonary_cdss
+📋 Collections cached: [...]
+INFO:     Application startup complete.
 ```
 
-This spins up:
-- `fastapi-app` on port `8000`
-- `mongodb` on port `27017`
+Interactive API docs: **http://127.0.0.1:8000/docs**
 
----
+### Updating requirements.txt
 
-## API Endpoints
-
-### Patient Management
+```powershell
+pip freeze > requirements.txt
 ```
-POST   /api/v1/patients/          Create new patient record
-GET    /api/v1/patients/{id}      Get patient details and history
-```
-
-### Component 1 — Pneumothorax
-```
-POST   /api/v1/pneumothorax/predict
-Body:  { file: <chest_xray_image> }
-
-Response:
-{
-  "prediction": "Pneumothorax Detected",
-  "confidence": 0.94,
-  "urgency_level": "High",
-  "heatmap_url": "/static/outputs/heatmap_abc123.png"
-}
-```
-
-### Component 2 — Pneumonia
-```
-POST   /api/v1/pneumonia/predict
-Body:  { file: <chest_xray_image> }
-
-Response:
-{
-  "prediction": "Pneumonia",
-  "confidence": 0.89,
-  "severity_percentage": 34.7,
-  "overlay_url": "/static/outputs/overlay_xyz456.png"
-}
-```
-
-### Component 3 — Tuberculosis
-```
-POST   /api/v1/tuberculosis/predict
-Body:  { file: <chest_xray_image> }
-
-Response:
-{
-  "prediction": "Tuberculosis Detected",
-  "lesion_types": ["cavity", "nodule"],
-  "lung_impact_score": 0.61,
-  "mask_url": "/static/outputs/mask_tb789.png"
-}
-```
-
-### Component 4 — Lung Cancer (CT)
-```
-POST   /api/v1/lung-cancer/predict
-Body:  { file: <ct_dicom_file> }
-
-Response:
-{
-  "prediction": "Malignant Nodule Detected",
-  "nodule_count": 2,
-  "nodule_locations": [{"x": 112, "y": 88, "z": 34, "diameter_mm": 8.2}],
-  "confidence": 0.91
-}
-```
-
-Full interactive API docs available at: `http://localhost:8000/docs`
 
 ---
 
 ## Environment Variables
 
-```env
-# .env.example
+Copy `.env.example` to `.env` and fill in the values. Main settings:
 
-# MongoDB
-MONGO_URI=mongodb://localhost:27017
-MONGO_DB_NAME=pulmonary_cdss
+| Setting | Purpose |
+|---|---|
+| MongoDB connection string | Atlas or local MongoDB URL |
+| Database name | `pulmonary_cdss` |
+| JWT secret key | Used to sign login tokens |
+| `OPENAI_API_KEY` *(optional)* | Used by the TB gatekeeper. If not set, it uses the CNN + heuristic check only |
 
-# App
-APP_ENV=development
-SECRET_KEY=your_secret_key_here
-API_PREFIX=/api/v1
-
-# Model paths (override if needed)
-C1_MODEL_PATH=app/ml/component1/weights/pneumothorax_model.h5
-C2_MODEL_PATH=app/ml/component2/weights/pneumonia_model.h5
-C3_MODEL_PATH=app/ml/component3/weights/tb_model.h5
-C4_MODEL_PATH=app/ml/component4/weights/lung_cancer_3d.pt
-```
+> Never commit `.env` to Git.
 
 ---
 
-## Docker Setup
+## API Endpoints
 
-```yaml
-# docker-compose.yml
-services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    env_file: .env
-    depends_on:
-      - mongo
-    volumes:
-      - ./static:/app/static
+All endpoints start with `/api/v1`. Most need a JWT: `Authorization: Bearer <token>`.
+See `/docs` for the full list and request bodies.
 
-  mongo:
-    image: mongo:7
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
+### Auth, users and patients
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/auth/login` | Log in (form: username, password) |
+| GET | `/users/me` | Current user |
+| GET / POST | `/users/doctors` | List / add doctors (admin) |
+| PUT / DELETE | `/users/doctors/{id}` | Edit / remove a doctor (admin) |
+| GET / POST | `/patients` | List / register patients |
+| GET | `/patients/search?q=` | Search patients |
+| GET / PUT / DELETE | `/patients/{id}` | Patient details |
+| POST | `/patients/{id}/notes` | Add a clinical note |
 
-volumes:
-  mongo_data:
-```
+### AI components
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/pneumothorax/predict` | Component 1 (form: patient_id, file) |
+| POST | `[pneumonia predict path]` | Component 2 |
+| POST | `/tuberculosis/predict` | Component 3 |
+| POST | `/tuberculosis/gatekeeper/predict` | TB gatekeeper only (testing, nothing saved) |
+| POST | `[lung cancer predict path]` | Component 4 |
+| POST | `/screening/full` | Full Screening (form: patient_id, file) |
+
+Every successful prediction response includes **`result_id`** (the saved record ID),
+which the frontend uses for the PDF download button.
+
+### Dashboard and history
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/dashboard/overview` | Stats, weekly chart, disease distribution and recent activity in one call |
+| GET | `/dashboard/stats` | Stat cards only |
+| GET | `/dashboard/weekly-volume` | Scans per day (last 7 days) |
+| GET | `/dashboard/disease-distribution` | Results per disease |
+| GET | `/reports/history?patient_id=&doctor_id=` | History for Prediction History, Patient and Doctor pages |
+
+**Dashboard counts**
+- `total_scans` – images uploaded (one Full Screening = **1** scan)
+- `total_analyses` – model results (one Full Screening = **3** analyses)
+- `total_screenings`, `single_analyses`, `today_scans`, `today_predictions`
+
+### Reports and PDFs
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/reports/pdf/list` | Results for the Reports page (JSON) |
+| GET | `/reports/pdf/summary` | Summary PDF; becomes a Doctor, Disease or Patient report when that filter is set |
+| GET | `/reports/pdf/result/{component}/{result_id}` | PDF for one result |
+| GET | `/reports/pdf/screening?pneumothorax=&pneumonia=&tuberculosis=` | One combined Full Screening PDF |
+
+**Filters** for `list` and `summary`: `start_date`, `end_date` (YYYY-MM-DD),
+`disease`, `status` (all / Positive / Normal), `source` (all / single / full_screening),
+`patient_id`, `doctor_id` (admin only), `search`.
+
+`component` is one of: `pneumothorax`, `pneumonia`, `tuberculosis`, `lungcancer`.
+Add `inline=true` to open the PDF in the browser instead of downloading it.
 
 ---
 
-## Why One File, One Job?
+## Shared Result Format
 
-This project follows the **Single Responsibility Principle**:
+All components save results in the same basic format so that the Dashboard,
+History, Reports and PDFs work for everyone:
 
-- If Grad-CAM logic breaks → only touch `gradcam.py`
-- If you swap MobileNet for EfficientNet → only change `model.py`
-- If MongoDB moves to PostgreSQL → only rewrite `repositories/`
-- If severity calculation changes → only edit `severity.py`
+```python
+{
+    "patient_id": "...",                      # same patient ID as other components
+    "doctor_id":  str(user["_id"]),           # who requested the analysis
+    "component":  "pneumonia",                # pneumothorax | pneumonia | tuberculosis | lungcancer
+    "prediction": "Pneumonia Detected",       # positive results contain "Detected"
+    "confidence": 84.55,                      # 0–100, confidence in the predicted class
+    "urgency":    "High",                     # High | Moderate | Low
+    "created_at": datetime.now(timezone.utc).isoformat(),
+    # ...plus any component-specific fields
+}
+```
 
-Each of the 4 components follows the **exact same folder pattern** inside `ml/`, making it easy for different team members to work on different components independently.
+Full Screening results also have `source: "full_screening"` and `screening_id`.
+
+**Tips for component owners**
+- Give fields clear names. The PDF shows every saved field, e.g. `affected_area_percent`.
+- Large fields (heatmaps, images) are skipped in the PDF and lists automatically.
+- Return `result_id` in the API response.
+
+---
+
+## PDF Reports
+
+Built with ReportLab in `app/services/report_service.py`.
+
+| Report | Contents |
+|---|---|
+| **Single result** | Patient details, AI result, confidence, urgency, model details, clinician review section |
+| **Full Screening** | Patient details, overview table, one section per engine |
+| **Summary** | Filters, counts per disease (patients, scans, positive, normal), full result list |
+| **Doctor / Disease / Patient** | Summary report filtered for one doctor, disease or patient |
+
+All times are shown in **Sri Lanka time (UTC+05:30)**.
+
+> `report_service.py` is shared by all components. Pull the latest version before
+> changing it so other people's fixes are not lost.
+
+---
+
+## MongoDB Collections
+
+| Collection | Contents |
+|---|---|
+| `users` | Admins and doctors |
+| `patients` | Patient records |
+| `pneumothorax_results` | Component 1 results |
+| `pneumonia_results` | Component 2 results |
+| `tuberculosis_results` | Component 3 results |
+| `lung_cancer_results` | Component 4 results |
+| `screening_results` | Full Screening summaries (with each engine's `result_id`) |
+
+> The server caches the list of collections at startup. If a collection is created
+> while the server is running (first result of a new component), **restart the
+> backend** so it shows on the Dashboard and Reports.
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `NetworkTimeout` / "Database is not responding" | Check your internet. In MongoDB Atlas → **Network Access**, make sure your current IP is allowed |
+| A component's results do not show on the Dashboard | Restart the backend (collection cache) |
+| Results missing for a doctor on the Reports page | The result was saved without `doctor_id` |
+| PDF download button does not appear | The prediction response has no `result_id` |
+| TensorFlow GPU / Keras optimizer warnings | Harmless on Windows; they are hidden at the top of `main.py` |
+| CORS error in the browser | `main.py` must allow `http://localhost:5173`, and use only **one** CORS middleware |
 
 ---
 
 ## Project Team
 
-> Unified Clinical Decision Support System for Pulmonary Diseases  
-> Research Project — Department of [Your Department]  
-> [Your University / Institution]
+**PulmoAI — Unified Clinical Decision Support System for Pulmonary Diseases**
+SLIIT Research Project — R26-IT-065
+
+| Component | Member              |
+|---|---------------------|
+| 1 – Pneumothorax Detection | Navodya Dhanushka   |
+| 2 – Pneumonia Diagnosis & Severity | Dinuka Amarasekara  |
+| 3 – Tuberculosis Detection | Chanuka Nanayakkara |
+| 4 – Lung Cancer Classification | Anuththara Bandara  |
