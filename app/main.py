@@ -36,6 +36,7 @@ from app.database import connect_db, close_db, get_database
 from app.config import settings
 from app.api.v1.router import router
 from app.utils.collection_cache import refresh_collection_cache
+from app.routers import system_settings
 
 app = FastAPI(
     title="Pulmonary CDSS API",
@@ -61,7 +62,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ── Routes ─────────────────────────────────────────────────────
 app.include_router(router, prefix=settings.API_PREFIX)
-
+app.include_router(system_settings.router, prefix="/api/v1")
 
 # ── Lifecycle (ONE startup handler only) ───────────────────────
 @app.on_event("startup")
